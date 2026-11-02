@@ -3,7 +3,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compilePolicy } from "../src/policies/loader.js";
-import { runPolicyInSandbox } from "../src/policies/sandbox.js";
+import {
+  runPolicyInSandbox,
+  SANDBOX_ENV_ALLOWLIST,
+  SANDBOX_NODE_FLAGS,
+  sandboxEnv
+} from "../src/policies/sandbox.js";
 import { DEFAULT_SCORE_CONFIG } from "../src/score.js";
 import { syntheticTree } from "./synthetic.js";
 
@@ -102,5 +107,76 @@ describe("policy sandbox", () => {
     });
     expect(compiled.ok).toBe(false);
     expect(compiled.error).toBeTruthy();
+  });
+});
+
+describe("policy sandbox hardening", () => {
+  it("only forwards allowlisted env keys and never NODE_OPTIONS", () => {
+    const env = sandboxEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/x",
+      OPENAI_API_KEY: "sk-secret",
+      DREAM_API_KEY: "sk-secret",
+      NODE_OPTIONS: "--require ./evil.js --inspect",
+      NODE_PATH: "/tmp/node_modules",
+      LD_PRELOAD: "/tmp/evil.so",
+      AWS_SECRET_ACCESS_KEY: "secret"
+    });
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/x" });
+    // Only keys present in the source are forwarded; the allowlist bounds what
+    // may pass, it does not invent missing variables.
+    for (const key of Object.keys(env)) {
+      expect(SANDBOX_ENV_ALLOWLIST as readonly string[]).toContain(key);
+    }
+    expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.DREAM_API_KEY).toBeUndefined();
+    expect(env.LD_PRELOAD).toBeUndefined();
+    expect(Object.keys(env).every((k) => (SANDBOX_ENV_ALLOWLIST as readonly string[]).includes(k))).toBe(
+      true
+    );
+  });
+
+  it("passes the hardened Node flags to the child", () => {
+    expect(SANDBOX_NODE_FLAGS).toContain("--frozen-intrinsics");
+    expect(SANDBOX_NODE_FLAGS).toContain("--disable-proto=throw");
+    expect(SANDBOX_NODE_FLAGS).toContain("--no-addons");
+  });
+
+  it("a policy cannot read secrets from its environment", async () => {
+    const probe = `
+      export default class Probe {
+        async solve(env) {
+          const secret = process.env.DREAM_API_KEY ?? process.env.OPENAI_API_KEY ?? null;
+          if (secret !== null) throw new Error("secret leaked: " + secret);
+          await env.probeBatch([]);
+        }
+      }
+    `;
+    process.env.DREAM_API_KEY = "sk-should-not-leak";
+    try {
+      const res = await sandbox(probe);
+      expect(res.failed).toBe(false);
+      expect(Number.isFinite(res.report.score)).toBe(true);
+    } finally {
+      delete process.env.DREAM_API_KEY;
+    }
+  });
+
+  it("a policy that writes __proto__ is contained as -Infinity", async () => {
+    const pollution = `
+      export default class Pollution {
+        async solve(env) {
+          // With --disable-proto=throw, this assignment throws instead of
+          // silently mutating the prototype chain.
+          ({}).__proto__ = { polluted: true };
+          await env.probeBatch([]);
+        }
+      }
+    `;
+    const res = await sandbox(pollution);
+    expect(res.failed).toBe(true);
+    expect(res.report.score).toBe(Number.NEGATIVE_INFINITY);
+    expect(res.report.error).toBeTruthy();
   });
 });

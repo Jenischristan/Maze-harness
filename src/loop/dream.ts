@@ -99,6 +99,21 @@ export interface DreamResult {
   }>;
 }
 
+/**
+ * Per-round facts that the *next* cycle's grid planner needs (paper Appendix
+ * B.2: "history: completed earlier live manifests, including prior
+ * planned/effective grids, actual opened width/depth, probe work, decision
+ * rounds, scores, and beta"). These are captured at online time because the
+ * tree alone does not record the plan the runner actually used, nor the beta
+ * it was compiled with.
+ */
+export interface CycleHistory {
+  tree: DiscoveryTree;
+  plan: GridPlan;
+  beta: number | null;
+  rounds: number;
+}
+
 export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   const runRoot = cfg.runRoot ?? "runs";
   const store = new RunStore({ rootDir: runRoot, runId: cfg.runId });
@@ -119,6 +134,7 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   let policyId = cfg.seedPolicy.policyId;
   let policySource = cfg.seedPolicy.source;
   const trees: DiscoveryTree[] = [];
+  const cycleHistory: CycleHistory[] = [];
   const histories = new Map<number, import("../types.js").TreeSummary[]>();
   const results: DreamResult["rounds"] = [];
   let cumulativeCalls = 0;
@@ -159,7 +175,7 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     const planned = await planGridForRound({
       policy,
       round,
-      trees,
+      history: cycleHistory,
       caps: cfg.gridCaps ?? {
         maxBranchCount: Math.max(1, cfg.maxParallelism),
         maxRefineCount: Math.max(0, cfg.roundsLimit)
@@ -231,6 +247,7 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
       rounds: env.rounds
     });
     await saveLiveManifest(manifestDir, onlineManifest);
+    cycleHistory.push({ tree, plan, beta: bakedBeta, rounds: env.rounds });
 
     if (cfg.mode === "dream") {
       const useTrees = cfg.holdoutLast ? trees.slice(0, -1) : trees;
@@ -333,10 +350,11 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
  * The returned plan is also clamped to the hard caps and worker cap so a
  * policy can never create a grid beyond what the runner supports.
  */
-async function planGridForRound(opts: {
+export async function planGridForRound(opts: {
   policy: ExplorationPolicy;
   round: number;
-  trees: DiscoveryTree[];
+  /** Completed cycles with the plan/beta/rounds the runner actually used. */
+  history: ReadonlyArray<CycleHistory>;
   caps: { maxBranchCount: number; maxRefineCount: number };
   workerCap: number;
   onEvent?: (event: DreamEvent) => void;
@@ -345,7 +363,8 @@ async function planGridForRound(opts: {
   const hardMaxRefineCount = Math.max(0, Math.floor(opts.caps.maxRefineCount));
   const workerCap = Math.max(1, Math.floor(opts.workerCap));
   const context: GridPlanningContext = {
-    history: opts.trees.map((tree) => {
+    history: opts.history.map((entry) => {
+      const tree = entry.tree;
       const branches = new Set(tree.nodes.map((n) => n.branch));
       let maxAttempt = 0;
       let best: number | null = null;
@@ -355,14 +374,16 @@ async function planGridForRound(opts: {
       }
       return {
         round: tree.treeIndex + 1,
-        plannedBranchCount: tree.maxParallelism,
-        plannedRefineCount: tree.roundsLimit,
+        // The actual plan used that cycle, not the runner's global caps: the
+        // paper's planner reads "prior planned/effective grids".
+        plannedBranchCount: entry.plan.branchCount,
+        plannedRefineCount: entry.plan.refineCount,
         openedBranches: branches.size,
         maxAttempt,
         probes: tree.nodes.length,
-        rounds: tree.roundsLimit,
+        rounds: entry.rounds,
         bestScore: best,
-        beta: null
+        beta: entry.beta
       };
     }),
     fallbackBranchCount: Math.min(workerCap, hardMaxBranchCount),
@@ -370,7 +391,8 @@ async function planGridForRound(opts: {
     hardMaxBranchCount,
     hardMaxRefineCount,
     workerCap,
-    replaySupport: opts.trees.map((tree) => {
+    replaySupport: opts.history.map((entry) => {
+      const tree = entry.tree;
       const rootChildren = tree.nodes.filter((n) => n.parentId === "root").length;
       let maxAttempt = 0;
       for (const node of tree.nodes) maxAttempt = Math.max(maxAttempt, node.attempt);

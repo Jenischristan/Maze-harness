@@ -273,9 +273,19 @@ allow|ask|deny`, `--model`, `--base-url`, `--api-key`, `--context-window`,
 ## Policy loading and safety
 
 Policy code is untrusted. It is compiled with esbuild; each replay runs in a
-**separate child process** with a wall-clock timeout and a V8 heap cap. A crash,
-timeout, exception, or illegal batch scores `-Infinity` on that tree and the reason
-is fed back to the developer.
+**separate child process** with:
+
+- a wall-clock timeout (the process group is `SIGKILL`ed),
+- a V8 heap cap (`--max-old-space-size`),
+- an environment allowlist — no API keys, and `NODE_OPTIONS` is never forwarded,
+  so no `--require`/`--inspect` preload can be injected,
+- hardened Node flags (`--frozen-intrinsics`, `--disable-proto=throw`,
+  `--no-addons`) so a policy cannot tamper with intrinsics, mutate
+  `__proto__`, or load native addons.
+
+A crash, timeout, exception, or illegal batch scores `-Infinity` on that tree and
+the reason is fed back to the developer. These guarantees are pinned by
+`test/sandbox.test.ts`.
 
 ## Layout
 
@@ -325,8 +335,10 @@ MCP config parsing, diff, `/init`, expand/collapse, `/status` and `/tree`.
 
 ## Known limits
 
-- The sandbox is a process boundary, not a security sandbox; use a container for
-  hostile code.
+- The sandbox is a **process boundary**, not a security sandbox. It enforces a
+  timeout, heap cap, environment allowlist and hardened Node flags, but it does
+  **not** restrict filesystem or network access. Use a container / VM for hostile
+  code.
 - Memory limits are V8 heap caps, not cgroups.
 - Live probing is sequential at the git level within a batch; agent/evaluator work in
   a batch runs concurrently.

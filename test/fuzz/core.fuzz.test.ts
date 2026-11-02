@@ -162,6 +162,9 @@ describe("fuzz: ReplayEnv", () => {
       let prevRevealed = 0;
       while (!env.done) {
         const legal = env.legalActions();
+        // `legalActions()` always lists `root` (the paper's A(T) includes r)
+        // while the env is live; whether it is *usable* is signalled by
+        // `legalRoots()`, and validateBatch rejects it when that is 0.
         expect(legal).toContain(ROOT_ID);
         for (const id of legal) {
           if (id !== ROOT_ID) {
@@ -356,13 +359,16 @@ describe("fuzz: observation signals", () => {
       };
       const obs = toObservation(node, baseline, parentScore);
       const scale = Math.max(Math.abs(baseline), 1);
+      // A root child's parent is the root, whose score is the baseline; the
+      // paper's parent->child gain therefore uses the baseline when no parent
+      // score is supplied. Only a null score yields null deltas.
+      const effectiveParent = parentScore ?? baseline;
       if (score === null) {
         expect(obs.deltaVsBaseline).toBeNull();
         expect(obs.deltaVsParent).toBeNull();
       } else {
         expect(obs.deltaVsBaseline).toBeCloseTo((score - baseline) / scale, 12);
-        if (parentScore === null) expect(obs.deltaVsParent).toBeNull();
-        else expect(obs.deltaVsParent).toBeCloseTo((score - parentScore) / scale, 12);
+        expect(obs.deltaVsParent).toBeCloseTo((score - effectiveParent) / scale, 12);
       }
       expect(Array.isArray(obs.tags)).toBe(true);
       for (const tag of obs.tags) expect(typeof tag).toBe("string");
@@ -392,8 +398,11 @@ describe("fuzz: computeScore", () => {
       expect(Number.isFinite(comp.score)).toBe(true);
       expect(comp.n).toBe(revealed.length);
       expect(comp.k).toBe(rounds);
+      const widthForEmpty = batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0);
       if (revealed.length === 0) {
-        expect(comp.penalty).toBe(0);
+        // The width penalty is a trajectory property, not a probe-count one, so
+        // it still applies when nothing was revealed; the probe terms vanish.
+        expect(comp.penalty).toBeCloseTo((config.lambda ?? 0) * widthForEmpty, 9);
         expect(comp.bonus).toBe(0);
       }
       const best = revealed.reduce<number | null>((acc, s) => (s === null ? acc : acc === null || s > acc ? s : acc), null) ?? baseline;
@@ -402,13 +411,17 @@ describe("fuzz: computeScore", () => {
       const width = batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0);
       const n = revealed.length;
       const k = Math.max(1, rounds);
-      // Paper Eq. (1): V = best - beta1*N + beta2*N/k. There is deliberately
-      // no rho term here; rho only appears in the evaluation-time beta sweep.
-      const expectedPenalty = n > 0 ? (config.beta1 ?? 0) * n + (config.lambda ?? 0) * width : 0;
+      // Paper Eq. (1) base, plus the documented opt-in rho budget terms when
+      // rho is explicitly set (gamma = 0.01).
+      const expectedPenalty = (config.beta1 ?? 0) * n + (config.lambda ?? 0) * width;
       const expectedBonus = n > 0 ? ((config.beta2 ?? 0) * n) / k : 0;
+      const rho = config.rho === undefined ? null : Math.max(0, Math.min(1, config.rho));
+      const gamma = rho === null ? 0 : 0.01;
+      const speed = rho === null || n === 0 ? 0 : (rho * gamma * n) / k;
+      const spend = rho === null || n === 0 ? 0 : (1 - rho) * gamma * n;
       expect(comp.penalty).toBeCloseTo(expectedPenalty, 9);
       expect(comp.bonus).toBeCloseTo(expectedBonus, 9);
-      expect(comp.score).toBeCloseTo(norm - expectedPenalty + expectedBonus, 9);
+      expect(comp.score).toBeCloseTo(norm - expectedPenalty + expectedBonus - speed + spend, 9);
     })
   );
 

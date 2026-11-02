@@ -65,21 +65,47 @@ function resolveRunner(): { command: string; prefix: string[] } {
   return { command: "tsx", prefix: [] };
 }
 
+/** Environment variables a replay child is allowed to inherit. */
+export const SANDBOX_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL"
+] as const;
+
 /**
  * Environment handed to a replay child. The policy is untrusted code, so we
  * do not forward API keys or other secrets from the parent process; only the
  * variables needed to run Node are kept.
+ *
+ * `NODE_OPTIONS` is deliberately absent: it can inject `--require`/`--import`
+ * preloads (arbitrary code in the child), `--inspect` (an open debugger port),
+ * or disable the module policy. Anything that is not an allowlisted key, and
+ * every `NODE_*` key, is dropped.
  */
-function sandboxEnv(): NodeJS.ProcessEnv {
+export function sandboxEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "NODE_OPTIONS"]) {
-    const value = process.env[key];
+  for (const key of SANDBOX_ENV_ALLOWLIST) {
+    const value = source[key];
     if (value !== undefined) env[key] = value;
   }
-  // Never let NODE_OPTIONS re-enable network/inspector hooks in a replay.
-  delete env.NODE_OPTIONS;
   return env;
 }
+
+/**
+ * Node flags passed before the runner script. They remove the most dangerous
+ * in-process escape hatches a policy could reach for without needing an OS
+ * sandbox: tampering with built-in prototypes, prototype-pollution writes,
+ * and loading native addons.
+ */
+export const SANDBOX_NODE_FLAGS = [
+  "--frozen-intrinsics",
+  "--disable-proto=throw",
+  "--no-addons"
+] as const;
 
 export interface SandboxConfig {
   timeoutMs: number;
@@ -97,12 +123,16 @@ export interface SandboxConfig {
  * A policy bundle runs in a separate child process with:
  *   - a wall-clock timeout (the process group is SIGKILLed)
  *   - a V8 heap cap (`--max-old-space-size`)
- *   - a scrubbed environment (no API keys or other parent secrets)
+ *   - a scrubbed environment (allowlist only; no API keys, no `NODE_OPTIONS`)
+ *   - hardened Node flags (frozen intrinsics, `__proto__` writes throw, no
+ *     native addons) and no inspector/`NODE_OPTIONS` preload hook
  *   - no access to the parent's live objects or event loop
  *
  * It does **not** restrict filesystem or network access. Untrusted code that
  * must be contained has to run inside a container / VM / OS sandbox; the name
- * here describes the process isolation only.
+ * here describes the process isolation only. `src/policies/sandbox.test.ts`
+ * pins the guarantees above and the README's "Known limits" section states the
+ * remaining gap explicitly.
  */
 
 export interface SandboxResult {
@@ -119,13 +149,17 @@ function execRunner(
     const runner = resolveRunner();
     const args = [
       ...runner.prefix,
+      ...SANDBOX_NODE_FLAGS,
       `--max-old-space-size=${cfg.memoryMb}`,
       runnerPath
     ];
     const child = spawn(runner.command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
-      env: sandboxEnv()
+      env: sandboxEnv(),
+      // Windows has no process groups to kill; the fallback `child.kill`
+      // handles it, so do not request POSIX-only behaviour there.
+      ...(process.platform === "win32" ? { windowsHide: true } : {})
     });
     let timedOut = false;
     const timer = setTimeout(() => {

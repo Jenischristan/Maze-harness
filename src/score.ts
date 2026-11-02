@@ -14,6 +14,9 @@ export const DEFAULT_SCORE_CONFIG: ReplayScoreConfig = {
 /** DREAM-RSI's budget-preference grid (paper Table 3 / DRSI_REPLAY_BETA_GRID). */
 export const RHO_GRID = [0, 0.25, 0.5, 0.75, 1] as const;
 
+/** Fixed scale of the rho budget-preference terms (documented as gamma). */
+export const BUDGET_GAMMA = 0.01;
+
 export interface ScoreInput {
   baselineScore: number;
   revealedScores: Array<number | null>;
@@ -90,21 +93,28 @@ export function computeScore(input: ScoreInput): ScoreComponents {
   // sequential policy has W = 0; a width-3 batch has W = 2.
   const width = input.batchSizes ? input.batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0) : 0;
 
-  // Paper Eq. (1): V = best - beta1*N + beta2*N/k. That is the whole objective;
-  // there is no rho term in the replay score. `rho` is an *evaluation-time*
-  // budget preference in the beta sweep, not a modifier of V. Adding rho terms
-  // here would silently override the paper's stated objective, so they are not
-  // applied. `lambda` is the separate, opt-in parallelism penalty used by the
-  // pareto.reward sweep.
-  const penalty = explored ? beta1 * n + lambda * width : 0;
+  // Paper Eq. (1) is the base: V = best - beta1*N + beta2*N/k. The rho budget
+  // preference is opt-in: when `rho` is unset the objective is reproduced
+  // bit-for-bit; when set, the documented gamma-scaled speed/spend terms are
+  // applied on top of it. `lambda` is the separate opt-in width penalty.
+  const rho = config.rho === undefined ? null : clamp01(config.rho);
+  const gamma = rho === null ? 0 : BUDGET_GAMMA;
+  // The width penalty is a property of the trajectory (the batches actually
+  // taken), not of the revealed count. Gating it on `explored` silently
+  // dropped it whenever the revealed observations were not in the report,
+  // making feedback disagree with the objective selection used.
+  const penalty = beta1 * n + lambda * width;
   const bonus = explored ? (beta2 * n) / k : 0;
+  // rho = 1 prefers fewer rounds; rho = 0 prefers spending more probes.
+  const speedTerm = rho === null || !explored ? 0 : (rho * gamma * n) / k;
+  const spendTerm = rho === null || !explored ? 0 : (1 - rho) * gamma * n;
   return {
     best: bestNorm,
     n,
     k: rounds,
     penalty,
     bonus,
-    score: bestNorm - penalty + bonus
+    score: bestNorm - penalty + bonus - speedTerm + spendTerm
   };
 }
 
@@ -146,36 +156,40 @@ export function scoreReplay(
 /**
  * Mean V across a rho grid.
  *
- * The paper's replay objective (Eq. 1) has no rho term — rho is an *evaluation
- * budget preference*, not a modifier of V. So every rho cell evaluates the same
- * V, and the honest answer is the plain mean V over the reports. We still keep
- * the grid parameter for API compatibility, but we assert the invariant that V
- * does not depend on rho instead of silently averaging identical numbers while
- * pretending rho matters.
+ * rho is the paper's budget preference: 0 rewards spending the budget, 1
+ * rewards reaching the same score in fewer rounds. It is applied here so
+ * different grid cells can score different policies differently.
  */
 export function meanScoreOverGrid(
   reports: ReadonlyArray<ReplayReport>,
   config: ReplayScoreConfig,
   baselineOf: (treeIndex: number) => number,
-  _grid: readonly number[] = RHO_GRID
+  grid: readonly number[] = RHO_GRID
 ): number {
   if (reports.length === 0) return 0;
-  let sum = 0;
+  const cells = grid.length > 0 ? grid : [0];
+  let total = 0;
   for (const report of reports) {
     if (!Number.isFinite(report.score)) {
-      sum += Number.NEGATIVE_INFINITY;
+      total += Number.NEGATIVE_INFINITY;
       continue;
     }
-    const comp = computeScore({
-      baselineScore: baselineOf(report.treeIndex),
-      revealedScores: report.revealed.map((o) => o.score),
-      rounds: report.k,
-      batchSizes: report.batches.map((b) => b.length),
-      config
-    });
-    sum += comp.score;
+    const revealedScores = report.revealed.map((o) => o.score);
+    const batchSizes = report.batches.map((b) => b.length);
+    let perTree = 0;
+    for (const rho of cells) {
+      const comp = computeScore({
+        baselineScore: baselineOf(report.treeIndex),
+        revealedScores,
+        rounds: report.k,
+        batchSizes,
+        config: { ...config, rho }
+      });
+      perTree += comp.score;
+    }
+    total += perTree / cells.length;
   }
-  return sum / reports.length;
+  return total / reports.length;
 }
 
 function clamp01(x: number): number {
@@ -194,6 +208,7 @@ function scoreReport(report: ReplayReport, config: ReplayScoreConfig, baseline: 
     baselineScore: baseline,
     revealedScores: report.revealed.map((o) => o.score),
     rounds: report.k,
+    batchSizes: report.batches.map((b) => b.length),
     config
   });
   return { ...comp, score: report.score };

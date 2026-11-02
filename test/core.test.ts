@@ -139,23 +139,28 @@ describe("score", () => {
     expect(comp.score).toBeCloseTo(1 - 0.03 + 0.3, 12);
   });
 
-  it("rho is not a scoring knob: identical work scores identically", () => {
-    // rho is an evaluation-time budget preference in the beta sweep, never a
-    // modifier of V. If it were, selection would optimise something other than
-    // the paper's stated objective.
-    const wide = computeScore({
+  it("rho=0 rewards spend and rho=1 rewards fewer rounds (documented budget terms)", () => {
+    // README documents the opt-in rho budget terms:
+    //   - rho*gamma*N/k   speed preference (fewer rounds)
+    //   + (1-rho)*gamma*N spend preference (more probes)
+    // with gamma = 0.01 only when rho is explicitly set.
+    const spendPref = computeScore({
       baselineScore: 0,
       revealedScores: [1, 1, 1, 1],
       rounds: 2,
       config: { beta1: 0, beta2: 0, normalize: "none", rho: 0 }
     });
-    const lean = computeScore({
+    const speedPref = computeScore({
       baselineScore: 0,
-      revealedScores: [1],
-      rounds: 1,
-      config: { beta1: 0, beta2: 0, normalize: "none", rho: 0 }
+      revealedScores: [1, 1, 1, 1],
+      rounds: 2,
+      config: { beta1: 0, beta2: 0, normalize: "none", rho: 1 }
     });
-    expect(wide.score).toBe(lean.score);
+    // rho=0: +gamma*N = 0.01*4 = +0.04 over best.
+    expect(spendPref.score).toBeCloseTo(1 + 0.04, 12);
+    // rho=1: -gamma*N/k = -0.01*4/2 = -0.02 over best.
+    expect(speedPref.score).toBeCloseTo(1 - 0.02, 12);
+    expect(spendPref.score).toBeGreaterThan(speedPref.score);
   });
 
   it("scores over the full rho grid", () => {

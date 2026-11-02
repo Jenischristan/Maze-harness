@@ -165,6 +165,12 @@ export class ReplayEnv implements ExplorationEnv {
         throw new IllegalBatchError("no unrevealed root children left to open");
       }
     }
+    // An empty tree has no recorded children at all: opening a root can never
+    // reveal anything, so a batch of roots must be rejected exactly like the
+    // "no unrevealed root children" case rather than counted as a no-op round.
+    if (this.index.nodes.length === 0 && ids.length > 0) {
+      throw new IllegalBatchError("tree has no recorded nodes to reveal");
+    }
   }
 
   async probeBatch(ids: string[]): Promise<Observation[]> {

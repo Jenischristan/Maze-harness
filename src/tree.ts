@@ -89,6 +89,11 @@ export function toObservation(
   const scale = Math.max(Math.abs(baseline), 1);
   const diag = node.diagnostics;
   const counts = readValidCounts(diag);
+  // A root child's parent is the root, whose score is the baseline. Callers pass
+  // `null` for "no revealed parent"; falling back to the baseline keeps
+  // `deltaVsParent`/`improvedVsParent` consistent with the paper's
+  // `parent->child gain` for root children instead of silently returning null.
+  const effectiveParent = parentScore ?? baseline;
   return {
     id: node.id,
     branch: node.branch,
@@ -101,13 +106,13 @@ export function toObservation(
     error: node.error,
     deltaVsBaseline: node.score === null ? null : (node.score - baseline) / scale,
     deltaVsParent:
-      node.score === null || parentScore === null ? null : (node.score - parentScore) / scale,
+      node.score === null ? null : (node.score - effectiveParent) / scale,
     nValid: counts.nValid,
     nTotal: counts.nTotal,
     tags: counts.tags,
     branchPromising: false,
     branchFailedHard: false,
-    improvedVsParent: node.score !== null && parentScore !== null && node.score > parentScore,
+    improvedVsParent: node.score !== null && node.score > effectiveParent,
     improvedVsBaseline: node.score !== null && node.score > baseline
   };
 }
@@ -119,8 +124,8 @@ export function toObservation(
  *   branch_promising        a successful probe with error === null and
  *                           fail_class === "ok" raised the score over parent
  *                           (or over baseline for a root child);
- *   branch_failed_hard      at least two same-class failures and no successful
- *                           probe anywhere earlier on the branch;
+ *   branch_failed_hard      at least two same-class failures with no successful
+ *                           probe on the branch in this observation episode;
  *   probe_improved_vs_parent / probe_improved_vs_baseline  the per-cell deltas.
  *
  * Success semantics follow the paper: a successful evaluation is one with
