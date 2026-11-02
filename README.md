@@ -124,12 +124,78 @@ nodes are still nodes and can be repaired.
 | `maxParallelism` | `W`, max actions per batch |
 | `roundsRemaining` | rounds left |
 | `done` | env closed |
+| `bestSoFar` | best revealed score (bookkeeping only) |
+| `budgetSpent` | probes spent (bookkeeping only) |
+| `reset()` | restart the observed prefix at the root |
 | `observed()` | revealed nodes only |
 | `legalActions()` | `["root", ...current leaf ids]` |
-| `legalRoots()` | replay: unrevealed root children; live: `Infinity` |
+| `legalRoots()` | replay: unrevealed root children; live: grid-plan cap |
 | `openedBranches()` | branch ids |
+| `meta(id)` | `.branch .attempt .parentId .seq .tags` |
 | `probeBatch(ids)` | consumes one round |
 | `priorHistory()` | read-only earlier tree summaries |
+
+`Observation` also carries `nValid`/`nTotal` (when the evaluator reports them)
+and prefix-safe `tags`. Per the paper's success semantics, an observation with
+`error === null` and `failClass === "ok"` is a successful evaluation even when
+`valid` is false; never call it repairable on `valid` alone.
+
+It also exposes the paper's `observation_signal` helpers, all derived from the
+revealed prefix only: `branchPromising` (the branch produced a successful probe
+that beat its parent or the baseline), `branchFailedHard` (two same-class
+failures with no prior success on the branch), `improvedVsParent` and
+`improvedVsBaseline`.
+
+`reset()` clears the observed prefix back to just the root while leaving the
+recorded world intact, so a fresh rollout over the same tree always replays the
+same way. `meta(id)` returns structural fields only (`.branch .attempt
+.parentId .seq .tags`) and never an unrevealed score. `bestSoFar` and
+`budgetSpent` are bookkeeping only; the paper forbids using them as decision
+inputs, so derive decisions from `observed()`.
+
+**Beta sweep (`pareto.reward`).** Offline evaluation sweeps one scalar `beta`
+through the policy's single `schedule(beta)` and ranks the resulting curve:
+
+```
+pareto.reward = pareto.auc − lambda · parallel_penalty
+```
+
+`pareto.auc` rewards high attainment with few total probes;
+`parallel_penalty` is the mean of `effective_sequential_rounds / total_probes`,
+where a batch of `k` on the world's `W = maxParallelism` workers costs
+`ceil(k / W)` sequential rounds (a serial policy ≈ 1, useful full batches
+≈ 1/W). Each round archives one `reports/tNNNN-<policy>-beta_sweep.json` and
+the sweep appears in `tNNNN-feedback.md`, flagged `DEGENERATE` when beta does
+not change the curve. Default grid `0,0.2,0.4,0.6,0.8,1`; override with
+`--beta-grid`, disable with `--beta-grid off`, and set the lambda with
+`--pareto-lambda`.
+
+**Live manifests and the default-beta loop.** Each completed online cycle
+writes `reports/tNNNN-live_cycle_manifest.json` (plus `_current`) with the
+planned and effective grid, probes, rounds, final best score, baseline, and
+the beta the policy was compiled with. Before each later cycle the runner reads
+the most recent 2–3 manifests and the matching archived beta sweep and applies
+the paper's cross-cycle rule:
+
+- live best still improving: keep the prior default unless the sweep clearly
+  favors a nearby beta;
+- live best plateaued and a higher beta reaches higher `pareto.reward`: raise
+  the default by one small step (~0.1);
+- plateaued and higher-beta points add work without higher attainment: lower
+  it by one step;
+- insufficient or conflicting history: use the moderate default `0.6`.
+
+The chosen beta is passed to the next policy's constructor and logged as
+`round N beta=B (source: reason)`. `--initial-beta <n>` sets the first cycle's
+beta; `--initial-beta off` disables cross-cycle selection.
+
+**Next-cycle grid planning (`planGrid`).** Before each online rollout the policy
+may implement `planGrid(context) -> GridPlan { branchCount, refineCount, reason }`.
+The plan bounds the live grid's width and depth; it is clamped to the hard caps
+(`--max-branches`, `--max-refines`, defaulting to `--workers` / `--round-limit`).
+A policy without a usable plan, or one that throws, gets a conservative
+bootstrap plan derived from the caps, and the CLI logs which source was used:
+`round N grid branches=B refines=R (policy|fallback: reason)`.
 
 **Replay score** for policy `m` on tree `i` — one formula, one place
 (`src/score.ts` `computeScore`):
@@ -152,10 +218,11 @@ placeholders; override with `--beta1` / `--beta2`.
 `best − β1·N + β2·N/k` objective bit-for-bit, and the budget terms use γ = 0.01
 only when `rho` is explicitly set.
 
-Selection scores a policy under *every* budget preference in the rho grid and
-averages the cells (`meanScoreOverGrid`, default grid `0, 0.25, 0.5, 0.75, 1`).
-Override the grid with `--grid 0,0.5,1`. A policy's score is the mean `V` over all
-history trees.
+Selection ranks a policy by its `pareto.reward` from the beta sweep. When the
+sweep is disabled (`--beta-grid off`) it falls back to scoring the policy under
+*every* budget preference in the rho grid and averaging the cells
+(`meanScoreOverGrid`, default grid `0, 0.25, 0.5, 0.75, 1`); override that with
+`--grid 0,0.5,1`. A policy's score is the mean over all history trees.
 
 **Outer loop** (`dream`): online rollout with π_t → offline replay on every tree →
 developer rewrites the policy → select the best mean `V` (ties keep π_t).
@@ -196,7 +263,8 @@ dream-harness worktree <name>         isolated git worktree
 ```
 
 Key options: `--rounds`, `--revisions`, `--workers`, `--round-limit`, `--beta1`,
-`--beta2`, `--rho`, `--lambda`, `--grid`, `--normalize`, `--holdout-last`,
+`--beta2`, `--rho`, `--lambda`, `--grid`, `--beta-grid`, `--pareto-lambda`,
+`--max-branches`, `--max-refines`, `--normalize`, `--holdout-last`,
 `--agent scripted|cli|deepseek|tool`,
 `--developer fake|cli`, `--verify "cmd"` (repeatable), `--permission
 allow|ask|deny`, `--model`, `--base-url`, `--api-key`, `--context-window`,

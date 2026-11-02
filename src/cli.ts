@@ -31,6 +31,11 @@ interface CommonOpts {
   rho?: string;
   lambda?: string;
   grid?: string;
+  betaGrid?: string;
+  paretoLambda?: string;
+  initialBeta?: string;
+  maxBranches?: string;
+  maxRefines?: string;
   normalize: string;
   sandboxTimeout: string;
   sandboxMemory: string;
@@ -79,6 +84,38 @@ function parseScoreConfig(o: CommonOpts): ReplayScoreConfig {
 /** Parse `--grid 0,0.25,0.5,1` into a rho grid; undefined keeps the default. */
 function parseGrid(raw: string | undefined): readonly number[] | undefined {
   if (raw === undefined || raw.trim() === "") return undefined;
+  const cells = raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n >= 0 && n <= 1);
+  return cells.length > 0 ? cells : undefined;
+}
+
+/**
+ * Parse `--initial-beta <n>`: a [0,1] scalar for the first live cycle, `off`
+ * to disable cross-cycle beta selection (`null`), or undefined to let the
+ * policy use its own default.
+ */
+function parseInitialBeta(raw: string | undefined): number | null | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "off" || trimmed === "none") return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    process.stderr.write(`invalid --initial-beta: ${raw} (expected a number in [0,1] or 'off')\n`);
+    process.exit(2);
+  }
+  return n;
+}
+
+/**
+ * Parse `--beta-grid 0,0.2,0.6,1` into a beta grid. `off`/`none` returns
+ * `null` (sweep disabled). Undefined keeps the paper default.
+ */
+function parseBetaGrid(raw: string | undefined): readonly number[] | null | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "off" || trimmed === "none") return null;
   const cells = raw
     .split(",")
     .map((s) => Number(s.trim()))
@@ -139,6 +176,16 @@ function positiveInt(name: string, raw: string | undefined): number {
   return n;
 }
 
+/** Parse a numeric flag that must be a non-negative integer. */
+function nonNegativeInt(name: string, raw: string | undefined): number {
+  const n = num(name, raw);
+  if (!Number.isInteger(n) || n < 0) {
+    process.stderr.write(`invalid --${name}: ${raw} (expected a non-negative integer)\n`);
+    process.exit(2);
+  }
+  return n;
+}
+
 function permissionPolicy(mode: string): PermissionPolicy {
   const action = mode === "ask" ? "ask" : mode === "deny" ? "deny" : "allow";
   return {
@@ -176,6 +223,17 @@ function commonOptions(cmd: Command): Command {
     .option("--rho <n>", "budget preference rho in [0,1] (opt-in; grid-selected when omitted)")
     .option("--lambda <n>", "width penalty lambda applied to W = sum(batch-1) (default 0)")
     .option("--grid <list>", "comma-separated rho grid for selection (default 0,0.25,0.5,0.75,1)")
+    .option(
+      "--beta-grid <list>",
+      "comma-separated beta grid for the evaluation-time sweep (default 0,0.2,0.4,0.6,0.8,1; 'off' disables)"
+    )
+    .option("--pareto-lambda <n>", "lambda in pareto.reward = auc - lambda*parallel_penalty", "0")
+    .option(
+      "--initial-beta <n>",
+      "baked-in beta for the first live cycle (later cycles follow the live-manifest rule; 'off' disables beta selection)"
+    )
+    .option("--max-branches <n>", "hard cap on planned grid branches (default: --workers)")
+    .option("--max-refines <n>", "hard cap on planned refinements per branch (default: --round-limit)")
     .option("--normalize <mode>", "relativeToBaseline | none", "relativeToBaseline")
     .option("--sandbox-timeout <ms>", "per policy-tree replay timeout", "5000")
     .option("--sandbox-memory <mb>", "per replay child memory limit", "256")
@@ -238,6 +296,14 @@ async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void>
   const log = (event: DreamEvent) => {
     if (event.type === "round-started") {
       process.stdout.write(`round ${event.round} policy=${event.policyId}\n`);
+    } else if (event.type === "grid-planned") {
+      process.stdout.write(
+        `  round ${event.round} grid branches=${event.plan.branchCount} refines=${event.plan.refineCount} (${event.source}: ${event.plan.reason})\n`
+      );
+    } else if (event.type === "beta-selected") {
+      process.stdout.write(
+        `  round ${event.round} beta=${event.decision.beta} (${event.decision.source}: ${event.decision.reason})\n`
+      );
     } else if (event.type === "online-batch") {
       process.stdout.write(
         `  round ${event.round} batch [${event.batch.join(", ")}] nodes=${event.nodes} best=${event.best ?? "null"}\n`
@@ -266,6 +332,19 @@ async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void>
     roundsLimit: positiveInt("round-limit", opts.roundLimit),
     scoreConfig: parseScoreConfig(opts),
     scoreGrid: parseGrid(opts.grid),
+    betaGrid: parseBetaGrid(opts.betaGrid),
+    paretoLambda: num("pareto-lambda", opts.paretoLambda ?? "0"),
+    initialBeta: parseInitialBeta(opts.initialBeta),
+    gridCaps: {
+      maxBranchCount:
+        opts.maxBranches !== undefined
+          ? positiveInt("max-branches", opts.maxBranches)
+          : positiveInt("workers", opts.workers),
+      maxRefineCount:
+        opts.maxRefines !== undefined
+          ? nonNegativeInt("max-refines", opts.maxRefines)
+          : positiveInt("round-limit", opts.roundLimit)
+    },
     sandbox: {
       timeoutMs: num("sandbox-timeout", opts.sandboxTimeout),
       memoryMb: num("sandbox-memory", opts.sandboxMemory)

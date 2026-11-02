@@ -125,7 +125,24 @@ describe("score", () => {
     expect(comp.score).toBeCloseTo(2 - 0.008 + 0.02, 12);
   });
 
-  it("rho = 0 rewards spending the budget", () => {
+  it("matches Eq. (1) exactly: V = best - b1*N + b2*N/k with no budget term", () => {
+    // Paper Eq. (1) is the whole replay objective. There is no budget-
+    // preference term, so a rho value must not change the score.
+    const comp = computeScore({
+      baselineScore: 0,
+      revealedScores: [1, 1, 1],
+      rounds: 2,
+      config: { beta1: 0.01, beta2: 0.2, normalize: "none" }
+    });
+    expect(comp.penalty).toBeCloseTo(0.01 * 3, 12);
+    expect(comp.bonus).toBeCloseTo((0.2 * 3) / 2, 12);
+    expect(comp.score).toBeCloseTo(1 - 0.03 + 0.3, 12);
+  });
+
+  it("rho is not a scoring knob: identical work scores identically", () => {
+    // rho is an evaluation-time budget preference in the beta sweep, never a
+    // modifier of V. If it were, selection would optimise something other than
+    // the paper's stated objective.
     const wide = computeScore({
       baselineScore: 0,
       revealedScores: [1, 1, 1, 1],
@@ -138,25 +155,7 @@ describe("score", () => {
       rounds: 1,
       config: { beta1: 0, beta2: 0, normalize: "none", rho: 0 }
     });
-    expect(wide.score).toBeGreaterThan(lean.score);
-  });
-
-  it("rho = 1 rewards solving in few rounds", () => {
-    // Same number of probes, different number of rounds: the efficient
-    // policy spends fewer probes per round and wins at rho = 1.
-    const wide = computeScore({
-      baselineScore: 0,
-      revealedScores: [1, 1, 1, 1],
-      rounds: 2,
-      config: { beta1: 0, beta2: 0, normalize: "none", rho: 1 }
-    });
-    const lean = computeScore({
-      baselineScore: 0,
-      revealedScores: [1],
-      rounds: 4,
-      config: { beta1: 0, beta2: 0, normalize: "none", rho: 1 }
-    });
-    expect(lean.score).toBeGreaterThan(wide.score);
+    expect(wide.score).toBe(lean.score);
   });
 
   it("scores over the full rho grid", () => {
@@ -168,9 +167,10 @@ describe("score", () => {
         best: 0,
         n: 4,
         k: 2,
+        maxParallelism: 2,
         batches: [],
         revealed: [
-          { id: "a", branch: 0, attempt: 0, parentId: "root", seq: 0, score: 2, valid: true, failClass: "ok", error: null, deltaVsBaseline: 1, deltaVsParent: null }
+          { id: "a", branch: 0, attempt: 0, parentId: "root", seq: 0, score: 2, valid: true, failClass: "ok", error: null, deltaVsBaseline: 1, deltaVsParent: null, nValid: null, nTotal: null, tags: [], branchPromising: true, branchFailedHard: false, improvedVsParent: false, improvedVsBaseline: true }
         ],
         error: null,
         illegal: false,

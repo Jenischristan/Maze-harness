@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { collectText } from "../util/stream.js";
-import { mkdir, rm, cp, appendFile } from "node:fs/promises";
+import { mkdir, rm, cp, appendFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export interface GitResult {
   code: number;
@@ -62,6 +62,28 @@ export async function gitOrThrow(args: string[], cwd: string): Promise<GitResult
   return res;
 }
 
+/**
+ * Copy a seed path into the repo working tree. `src` may be a directory (copy
+ * its contents recursively) or a single file (copy into the repo root under
+ * its own name). Previously the file case was passed straight to `cp(src,
+ * repoDir)`, which copied the file *over* the directory path and failed.
+ */
+async function seedRepo(src: string | undefined, repoDir: string): Promise<void> {
+  if (!src) {
+    throw new Error("initProgramDir is not set; cannot bootstrap the workspace");
+  }
+  const info = await stat(src).catch(() => null);
+  if (!info) {
+    throw new Error(`initProgramDir does not exist: ${src}`);
+  }
+  if (info.isDirectory()) {
+    await cp(src, repoDir, { recursive: true, force: true });
+    return;
+  }
+  // Copy the file into the repo root under its own name.
+  await cp(src, join(repoDir, basename(src)));
+}
+
 export class GitWorkspace {
   readonly repoDir: string;
   readonly worktreesDir: string;
@@ -89,7 +111,13 @@ export class GitWorkspace {
   async initRootIfNeeded(): Promise<void> {
     const existing = await git(["rev-parse", "--verify", "root"], this.repoDir);
     if (existing.code === 0) return;
-    await cp(this.initProgramDir, this.repoDir, { recursive: true, force: true });
+    // `initProgramPath` points at the initial *program* (a file such as
+    // `examples/toy-task/program.json` or a directory of seeds). Copying a file
+    // onto `repoDir` used to fail with "src argument must be a string" when the
+    // path was undefined and silently created the wrong tree when it was a
+    // file. Handle both shapes explicitly and fail loudly when the seed does
+    // not exist, instead of bootstrapping a repo from nothing.
+    await seedRepo(this.initProgramDir, this.repoDir);
     await gitOrThrow(["add", "-A"], this.repoDir);
     // A reused repo may already have the init files committed (identical tree).
     // There is then nothing to commit and `git commit` exits non-zero, so tag

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
   DiscoveryAgent,
   DiscoveryTree,
@@ -15,6 +16,17 @@ import { compilePolicy } from "../policies/loader.js";
 import { summaryFromTree } from "../runs/summary.js";
 import { scoreReplay } from "../score.js";
 import { ReplayEnv } from "../env/replay.js";
+import {
+  chooseDefaultBeta,
+  loadBetaSweep,
+  loadLiveManifests,
+  manifestFromTree,
+  saveLiveManifest,
+  type BetaSweepPoint,
+  type DefaultBetaDecision,
+  type LiveCycleManifest
+} from "./manifest.js";
+import type { ExplorationPolicy, GridPlan, GridPlanningContext } from "../types.js";
 
 export interface DreamConfig {
   runId: string;
@@ -37,11 +49,33 @@ export interface DreamConfig {
   holdoutLast?: boolean;
   mode: "dream" | "fixed";
   runRoot?: string;
+  /**
+   * Beta grid for the paper's evaluation-time sweep. `null` disables it and
+   * selection falls back to the rho-grid mean.
+   */
+  betaGrid?: readonly number[] | null;
+  /** Lambda in `pareto.reward = auc - lambda * parallel_penalty`. */
+  paretoLambda?: number;
+  /** Hard caps for the policy's next-cycle grid plan. */
+  gridCaps?: { maxBranchCount: number; maxRefineCount: number };
+  /**
+   * Baked-in beta used for the first online cycle. Later cycles get their beta
+   * from the paper's cross-cycle default-beta rule over live manifests; pass
+   * `null` to disable beta selection entirely.
+   */
+  initialBeta?: number | null;
   onEvent?: (event: DreamEvent) => void;
 }
 
 export type DreamEvent =
   | { type: "round-started"; round: number; policyId: string }
+  | {
+      type: "grid-planned";
+      round: number;
+      plan: { branchCount: number; refineCount: number; reason: string };
+      source: "policy" | "fallback";
+    }
+  | { type: "beta-selected"; round: number; decision: DefaultBetaDecision }
   | { type: "online-batch"; round: number; batch: string[]; nodes: number; best: number | null; tree: DiscoveryTree }
   | { type: "online-finished"; round: number; treeIndex: number; best: number | null; calls: number }
   | { type: "offline"; round: number; event: OfflineEvent }
@@ -88,11 +122,26 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   const histories = new Map<number, import("../types.js").TreeSummary[]>();
   const results: DreamResult["rounds"] = [];
   let cumulativeCalls = 0;
+  const manifestDir = join(store.dir, "reports");
+  // Beta baked into the policy for the upcoming cycle. The first cycle uses
+  // the caller's initial beta; later cycles follow the paper's cross-cycle
+  // default-beta rule over the archived live manifests and sweeps.
+  let bakedBeta: number | null = cfg.initialBeta ?? null;
 
   for (let round = 1; round <= cfg.rounds; round += 1) {
     if (cfg.signal?.aborted) break;
     cfg.onEvent?.({ type: "round-started", round, policyId });
     const treeIndex = round - 1;
+    if (round > 1) {
+      const manifests = await loadLiveManifests(manifestDir);
+      const priorRound = manifests.at(-1);
+      const sweep: BetaSweepPoint[] | null = priorRound
+        ? await loadBetaSweep(manifestDir, priorRound.round, priorRound.policyId)
+        : null;
+      const decision = chooseDefaultBeta({ manifests, sweep, priorBeta: bakedBeta });
+      bakedBeta = decision.beta;
+      cfg.onEvent?.({ type: "beta-selected", round, decision });
+    }
     const compiled = await compilePolicy({
       source: policySource,
       outDir: `${store.dir}/policies/build`,
@@ -104,8 +153,22 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     const policyModule = (await import(compiled.bundlePath)) as {
       default: new (cfg: unknown) => import("../types.js").ExplorationPolicy;
     };
-    const policy = new policyModule.default({});
+    const policyConfig = bakedBeta === null ? {} : { beta: bakedBeta };
+    const policy = new policyModule.default(policyConfig);
     const priorHistory = trees.map((t) => summaryFromTree(t));
+    const planned = await planGridForRound({
+      policy,
+      round,
+      trees,
+      caps: cfg.gridCaps ?? {
+        maxBranchCount: Math.max(1, cfg.maxParallelism),
+        maxRefineCount: Math.max(0, cfg.roundsLimit)
+      },
+      workerCap: cfg.maxParallelism,
+      onEvent: cfg.onEvent
+    });
+    const plan = planned.plan;
+    const planSource = planned.source;
     const env = new LiveEnv({
       runId: cfg.runId,
       treeIndex,
@@ -118,6 +181,7 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
       evaluator: cfg.evaluator,
       workspace,
       priorHistory,
+      gridPlan: plan,
       signal: cfg.signal,
       onTreeChange: async (tree) => {
         await store.saveTree(tree);
@@ -153,6 +217,20 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
       best: bestOf(tree),
       calls: cumulativeCalls
     });
+    // Live-cycle sidecar: what this cycle actually did, including the beta the
+    // policy was compiled with. Later cycles read these (and the archived beta
+    // sweeps) to choose their baked-in default beta.
+    const onlineManifest = manifestFromTree({
+      runId: cfg.runId,
+      round,
+      tree,
+      policyId,
+      plan,
+      planSource: planSource,
+      beta: bakedBeta,
+      rounds: env.rounds
+    });
+    await saveLiveManifest(manifestDir, onlineManifest);
 
     if (cfg.mode === "dream") {
       const useTrees = cfg.holdoutLast ? trees.slice(0, -1) : trees;
@@ -168,6 +246,8 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
         revisions: cfg.revisions,
         scoreConfig: cfg.scoreConfig,
         scoreGrid: cfg.scoreGrid,
+        betaGrid: cfg.betaGrid,
+        paretoLambda: cfg.paretoLambda,
         sandbox: cfg.sandbox,
         policyWorkDir: `${store.dir}/policies/work`,
         onEvent: (event) => cfg.onEvent?.({ type: "offline", round, event })
@@ -243,6 +323,106 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     });
   }
   return { rounds: results };
+}
+
+/**
+ * Ask the current policy for its next-cycle grid plan (paper Appendix B.2
+ * "Required next-cycle grid planning"). The plan always comes back non-null:
+ * when the policy has no `planGrid`, returns an invalid plan, or throws, the
+ * runtime falls back to a conservative bootstrap plan derived from the caps.
+ * The returned plan is also clamped to the hard caps and worker cap so a
+ * policy can never create a grid beyond what the runner supports.
+ */
+async function planGridForRound(opts: {
+  policy: ExplorationPolicy;
+  round: number;
+  trees: DiscoveryTree[];
+  caps: { maxBranchCount: number; maxRefineCount: number };
+  workerCap: number;
+  onEvent?: (event: DreamEvent) => void;
+}): Promise<{ plan: GridPlan; source: "policy" | "fallback" }> {
+  const hardMaxBranchCount = Math.max(1, Math.floor(opts.caps.maxBranchCount));
+  const hardMaxRefineCount = Math.max(0, Math.floor(opts.caps.maxRefineCount));
+  const workerCap = Math.max(1, Math.floor(opts.workerCap));
+  const context: GridPlanningContext = {
+    history: opts.trees.map((tree) => {
+      const branches = new Set(tree.nodes.map((n) => n.branch));
+      let maxAttempt = 0;
+      let best: number | null = null;
+      for (const node of tree.nodes) {
+        maxAttempt = Math.max(maxAttempt, node.attempt);
+        if (node.score !== null && (best === null || node.score > best)) best = node.score;
+      }
+      return {
+        round: tree.treeIndex + 1,
+        plannedBranchCount: tree.maxParallelism,
+        plannedRefineCount: tree.roundsLimit,
+        openedBranches: branches.size,
+        maxAttempt,
+        probes: tree.nodes.length,
+        rounds: tree.roundsLimit,
+        bestScore: best,
+        beta: null
+      };
+    }),
+    fallbackBranchCount: Math.min(workerCap, hardMaxBranchCount),
+    fallbackRefineCount: hardMaxRefineCount,
+    hardMaxBranchCount,
+    hardMaxRefineCount,
+    workerCap,
+    replaySupport: opts.trees.map((tree) => {
+      const rootChildren = tree.nodes.filter((n) => n.parentId === "root").length;
+      let maxAttempt = 0;
+      for (const node of tree.nodes) maxAttempt = Math.max(maxAttempt, node.attempt);
+      return {
+        traceBranchCount: Math.max(1, rootChildren),
+        traceRefineCount: maxAttempt
+      };
+    })
+  };
+
+  const fallback: GridPlan = {
+    branchCount: context.fallbackBranchCount,
+    refineCount: context.fallbackRefineCount,
+    reason:
+      "bootstrap: policy provided no usable planGrid, so use the worker-capped fallback width/depth"
+  };
+
+  let plan: GridPlan = fallback;
+  let source: "policy" | "fallback" = "fallback";
+  try {
+    if (typeof opts.policy.planGrid === "function") {
+      const raw = await opts.policy.planGrid(context);
+      const candidate = normalizePlan(raw, context);
+      if (candidate) {
+        plan = candidate;
+        source = "policy";
+      }
+    }
+  } catch {
+    plan = fallback;
+    source = "fallback";
+  }
+  opts.onEvent?.({ type: "grid-planned", round: opts.round, plan, source });
+  return { plan, source };
+}
+
+/** Clamp an arbitrary policy plan into the context's hard bounds. */
+function normalizePlan(
+  raw: GridPlan | null | undefined,
+  context: GridPlanningContext
+): GridPlan | null {
+  if (!raw || typeof raw !== "object") return null;
+  const branchCount = Number(raw.branchCount);
+  const refineCount = Number(raw.refineCount);
+  if (!Number.isFinite(branchCount) || !Number.isFinite(refineCount)) return null;
+  const b = Math.min(context.hardMaxBranchCount, Math.max(1, Math.floor(branchCount)));
+  const r = Math.min(context.hardMaxRefineCount, Math.max(0, Math.floor(refineCount)));
+  const reason =
+    typeof raw.reason === "string" && raw.reason.trim().length > 0
+      ? raw.reason.trim()
+      : "policy plan (no reason given)";
+  return { branchCount: b, refineCount: r, reason };
 }
 
 async function replayFromTree(

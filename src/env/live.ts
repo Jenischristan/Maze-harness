@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GitWorkspace } from "../workspace/git.js";
-import { TreeIndex, ROOT_ID, summarizeTree, toObservation } from "../tree.js";
+import { TreeIndex, ROOT_ID, summarizeTree, toObservation, withBranchSignals } from "../tree.js";
 import type {
   AgentContext,
   DiscoveryAgent,
@@ -25,6 +25,8 @@ export interface LiveEnvConfig {
   evaluator: Evaluator;
   workspace: GitWorkspace;
   priorHistory: TreeSummary[];
+  /** Effective grid plan for this rollout (bounds width/depth). */
+  gridPlan?: import("../types.js").GridPlan;
   /** Abort signal for the whole rollout (e.g. Ctrl-C in the CLI). */
   signal?: AbortSignal;
   onTreeChange?: (tree: DiscoveryTree) => Promise<void> | void;
@@ -37,7 +39,16 @@ export class LiveEnv implements ExplorationEnv {
   readonly roundsLimit: number;
 
   private readonly cfg: LiveEnvConfig;
-  private readonly index: TreeIndex;
+  /**
+   * Index over the nodes recorded so far. `TreeIndex` snapshots the node list
+   * at construction, so this must be rebuilt whenever `nodes` grows. It used to
+   * be built once with `nodes: []` and never refreshed, which made every
+   * refinement look up its parent as missing: the lookup returned undefined, the
+   * "child" was scheduled as a brand-new root branch, attempt stayed 0, and a
+   * live rollout silently produced a flat tree of root children instead of
+   * refinements.
+   */
+  private index: TreeIndex;
   private readonly observations = new Map<string, Observation>();
   private readonly batches: string[][] = [];
   private roundsUsed = 0;
@@ -60,6 +71,11 @@ export class LiveEnv implements ExplorationEnv {
       nodes: [],
       createdAt: new Date().toISOString()
     });
+  }
+
+  /** Rebuild the index after the node list changes. */
+  private reindex(): void {
+    this.index = new TreeIndex(this.index.tree);
   }
 
   get roundsRemaining(): number {
@@ -86,6 +102,43 @@ export class LiveEnv implements ExplorationEnv {
     return this.observations;
   }
 
+  /** Best revealed score, or the baseline when nothing was revealed. */
+  get bestSoFar(): number | null {
+    let best: number | null = null;
+    for (const obs of this.observations.values()) {
+      if (obs.score === null) continue;
+      if (best === null || obs.score > best) best = obs.score;
+    }
+    return best ?? this.baselineScore;
+  }
+
+  /** Number of probes spent so far (revealed non-root nodes). */
+  get budgetSpent(): number {
+    return this.observations.size;
+  }
+
+  reset(): void {
+    this.observations.clear();
+    this.batches.length = 0;
+    this.roundsUsed = 0;
+    this.seq = 0;
+    this.doneFlag = false;
+    this.nextBranchId = 0;
+    this.index.nodes.length = 0;
+  }
+
+  meta(id: string): import("../types.js").CellMeta {
+    const node = id === ROOT_ID ? null : this.index.get(id);
+    return {
+      id,
+      branch: node?.branch ?? -1,
+      attempt: node?.attempt ?? 0,
+      parentId: node?.parentId ?? "",
+      seq: node?.seq ?? -1,
+      tags: id === ROOT_ID ? ["root"] : []
+    };
+  }
+
   legalActions(): string[] {
     if (this.doneFlag) return [];
     // Same definition as ReplayEnv: a revealed node with no revealed child is
@@ -97,7 +150,11 @@ export class LiveEnv implements ExplorationEnv {
   }
 
   legalRoots(): number {
-    return Number.POSITIVE_INFINITY;
+    const plan = this.cfg.gridPlan;
+    if (!plan) return Number.POSITIVE_INFINITY;
+    const opened = new Set<number>();
+    for (const obs of this.observations.values()) opened.add(obs.branch);
+    return Math.max(0, plan.branchCount - opened.size);
   }
 
   openedBranches(): number[] {
@@ -117,11 +174,35 @@ export class LiveEnv implements ExplorationEnv {
     }
     const legal = new Set(this.legalActions());
     const seen = new Set<string>();
+    let rootsRequested = 0;
     for (const id of ids) {
       if (!legal.has(id)) throw new Error(`non-eligible id ${id}`);
-      if (id === ROOT_ID) continue;
+      if (id === ROOT_ID) {
+        rootsRequested += 1;
+        continue;
+      }
       if (seen.has(id)) throw new Error(`duplicate leaf ${id}`);
       seen.add(id);
+      // The effective grid is a hard depth bound: a leaf at the plan's refine
+      // cap may not be refined further (paper: "the runtime grid is the hard
+      // bound"). Without this the plan could be silently exceeded live.
+      const node = this.index.get(id);
+      const refineCap = this.cfg.gridPlan?.refineCount;
+      if (node && refineCap !== undefined && node.attempt >= refineCap) {
+        throw new Error(`leaf ${id} is at the plan refine cap ${refineCap}`);
+      }
+    }
+    // Only as many roots as the plan allows may be opened in one batch.
+    const rootCap = this.cfg.gridPlan?.branchCount;
+    if (rootCap !== undefined && rootsRequested > 0) {
+      const opened = new Set<number>();
+      for (const obs of this.observations.values()) opened.add(obs.branch);
+      const remaining = Math.max(0, rootCap - opened.size);
+      if (rootsRequested > remaining) {
+        throw new Error(
+          `batch opens ${rootsRequested} root(s) but the plan allows ${remaining}`
+        );
+      }
     }
   }
 
@@ -136,15 +217,34 @@ export class LiveEnv implements ExplorationEnv {
       return [];
     }
     const prepared: Awaited<ReturnType<LiveEnv["prepare"]>>[] = [];
-    for (const id of ids) prepared.push(await this.prepare(id));
+    let remainingRoots = this.legalRoots();
+    for (const id of ids) {
+      if (id === ROOT_ID) {
+        if (remainingRoots <= 0) continue;
+        remainingRoots -= 1;
+      }
+      prepared.push(await this.prepare(id));
+    }
+    if (prepared.length === 0) {
+      this.doneFlag = true;
+      return [];
+    }
     const results = await Promise.all(prepared.map((p) => this.execute(p)));
     this.roundsUsed += 1;
     this.batches.push([...ids]);
     for (const node of results) this.index.nodes.push(node);
+    // Nodes were appended to the snapshot's array; refresh the lookup maps so
+    // subsequent `get`/`leaves`/`reserveBranch` calls see them.
+    this.reindex();
     for (const node of results) {
       const parentScore =
         node.parentId === ROOT_ID ? null : (this.index.get(node.parentId)?.score ?? null);
-      this.observations.set(node.id, toObservation(node, this.baselineScore, parentScore));
+      const base = toObservation(node, this.baselineScore, parentScore);
+      const earlier: Observation[] = [];
+      for (const obs of this.observations.values()) {
+        if (obs.branch === node.branch) earlier.push(obs);
+      }
+      this.observations.set(node.id, withBranchSignals(base, earlier));
     }
     if (this.roundsUsed >= this.roundsLimit) this.doneFlag = true;
     if (this.cfg.onTreeChange) await this.cfg.onTreeChange(this.currentTree());

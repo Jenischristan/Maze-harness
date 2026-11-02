@@ -4,3 +4,4 @@ runs/
 *.log
 tmp/
 __pycache__/
+Dream-RSI/.git/

@@ -4,6 +4,33 @@ import type { ExplorationEnv, ExplorationPolicy, Observation } from "../types.js
 export interface FixedParallelRefineConfig {
   branches: number;
   refinements: number;
+  /**
+   * Paper's beta knob in [0,1]. High beta = more width, deeper patience and
+   * weaker pruning; low beta = fewer probes and earlier stopping. Defaults to
+   * 0.6 (the paper's "moderately exploratory" default when history is thin).
+   */
+  beta: number;
+}
+
+/**
+ * Route every behavioral threshold through one schedule. Beta has exactly one
+ * role inside a live/replay episode: it is fixed for the whole rollout and
+ * scales width, depth and the stopping rule together.
+ */
+function schedule(beta: number, maxParallelism: number, legalRootCap: number): {
+  branches: number;
+  refinements: number;
+  stopBelowBaseline: boolean;
+} {
+  const b = Math.max(0, Math.min(1, beta));
+  // More beta -> wider and deeper; fewer beta -> narrower and shallower.
+  const branches = Math.max(1, Math.round(1 + b * 2));
+  const refinements = Math.max(0, Math.round(b * 3));
+  return {
+    branches: Math.min(branches, Math.max(1, maxParallelism), Math.max(1, legalRootCap)),
+    refinements,
+    stopBelowBaseline: b < 0.35
+  };
 }
 
 /**
@@ -24,38 +51,112 @@ export interface FixedParallelRefineConfig {
 export class FixedParallelRefine implements ExplorationPolicy {
   private readonly branches: number;
   private readonly refinements: number;
+  private readonly beta: number;
+  /** Grid plan for this cycle; bounds width/depth when the runtime sets one. */
+  private plan: { branchCount: number; refineCount: number } | null = null;
 
   constructor(config: Partial<FixedParallelRefineConfig> = {}) {
+    this.beta = Math.max(0, Math.min(1, config.beta ?? 0.6));
     this.branches = Math.max(1, config.branches ?? 3);
     this.refinements = Math.max(0, config.refinements ?? 2);
   }
 
+  /**
+   * Next-cycle grid planning (paper Appendix B.2). Uses only prefix-safe facts
+   * from `context.history`: widen when deeper refinements stall, deepen when
+   * gains arrive late on a small set of directions, and bootstrap
+   * conservatively when history is thin.
+   */
+  planGrid(context: import("../types.js").GridPlanningContext): import("../types.js").GridPlan {
+    const plan = this.computeGridPlan(context);
+    // Remember the plan so solve() bounds this cycle's width/depth to it.
+    this.plan = { branchCount: plan.branchCount, refineCount: plan.refineCount };
+    return plan;
+  }
+
+  private computeGridPlan(
+    context: import("../types.js").GridPlanningContext
+  ): import("../types.js").GridPlan {
+    const hardB = Math.max(1, context.hardMaxBranchCount);
+    const hardR = Math.max(0, context.hardMaxRefineCount);
+    const fallbackB = Math.min(hardB, Math.max(1, context.fallbackBranchCount));
+    const fallbackR = Math.min(hardR, Math.max(0, context.fallbackRefineCount));
+    const history = context.history;
+    if (history.length < 2) {
+      return {
+        branchCount: fallbackB,
+        refineCount: fallbackR,
+        reason: `bootstrap: only ${history.length} completed live cycle(s), so use the conservative fallback width/depth`
+      };
+    }
+    const last = history[history.length - 1]!;
+    const prev = history[history.length - 2]!;
+    const bestLast = last.bestScore ?? Number.NEGATIVE_INFINITY;
+    const bestPrev = prev.bestScore ?? Number.NEGATIVE_INFINITY;
+    const improving = bestLast > bestPrev;
+    const rootChildren = Math.max(1, ...context.replaySupport.map((r) => r.traceBranchCount));
+    const maxRefine = Math.max(0, ...context.replaySupport.map((r) => r.traceRefineCount));
+    if (!improving && last.maxAttempt >= prev.maxAttempt) {
+      // Late gains have stopped; spend the next cycle widening direction
+      // coverage instead of deepening a plateauing set of branches.
+      return {
+        branchCount: Math.min(hardB, Math.max(fallbackB, rootChildren + 1)),
+        refineCount: Math.min(hardR, Math.max(0, Math.floor(prev.maxAttempt / 2))),
+        reason: `plateau at max attempt ${last.maxAttempt} with no live gain; widen branches and shallow the refine depth`
+      };
+    }
+    if (improving && last.openedBranches <= prev.openedBranches) {
+      return {
+        branchCount: Math.min(hardB, Math.max(1, last.openedBranches)),
+        refineCount: Math.min(hardR, Math.max(maxRefine, last.maxAttempt + 1)),
+        reason: `live best improved on a stable set of ${last.openedBranches} branches; keep width and deepen refinements`
+      };
+    }
+    return {
+      branchCount: Math.min(hardB, Math.max(1, last.plannedBranchCount)),
+      refineCount: Math.min(hardR, Math.max(0, last.plannedRefineCount)),
+      reason: "conflicting history: retain the previous planned width/depth"
+    };
+  }
+
   async solve(env: ExplorationEnv): Promise<void> {
-    for (let attempt = 0; attempt < this.refinements; attempt += 1) {
+    const openCap = Number.isFinite(env.legalRoots()) ? env.legalRoots() : this.branches;
+    const s = schedule(this.beta, env.maxParallelism, Math.max(1, openCap));
+    const plan = this.plan;
+    const wantBranches = plan
+      ? Math.min(plan.branchCount, this.branches, Math.max(1, openCap))
+      : s.branches;
+    const wantRefines = plan ? Math.min(plan.refineCount, this.refinements) : s.refinements;
+    for (let attempt = 0; attempt < Math.max(1, wantRefines); attempt += 1) {
       if (env.done || env.roundsRemaining <= 0) return;
-      const batch = this.nextBatch(env);
+      const batch = this.nextBatch(env, wantBranches, wantRefines, s.stopBelowBaseline);
       if (batch.length === 0) return;
       const obs = await env.probeBatch(batch);
       if (obs.length === 0 && batch.every((id) => id !== ROOT_ID)) return;
     }
     if (!env.done && env.roundsRemaining > 0) {
-      const batch = this.openBranches(env);
+      const batch = this.openBranches(env, wantBranches);
       if (batch.length > 0) await env.probeBatch(batch);
     }
   }
 
-  private openBranches(env: ExplorationEnv): string[] {
+  private openBranches(env: ExplorationEnv, branches = this.branches): string[] {
     const opened = new Set<number>();
     for (const obs of env.observed().values()) opened.add(obs.branch);
-    const want = Math.min(this.branches - opened.size, env.legalRoots());
+    const want = Math.min(branches - opened.size, env.legalRoots());
     return want > 0 ? new Array<string>(Math.min(want, env.maxParallelism)).fill(ROOT_ID) : [];
   }
 
-  private nextBatch(env: ExplorationEnv): string[] {
+  private nextBatch(
+    env: ExplorationEnv,
+    branches = this.branches,
+    refinements = this.refinements,
+    stopBelowBaseline = false
+  ): string[] {
     const leaves = this.frontier(env);
-    const slots = Math.min(env.maxParallelism, this.branches);
+    const slots = Math.min(env.maxParallelism, branches);
     if (leaves.length === 0) {
-      return this.openBranches(env).slice(0, slots);
+      return this.openBranches(env, branches).slice(0, slots);
     }
     const byBranch = new Map<number, Observation>();
     for (const leaf of leaves) {
@@ -63,13 +164,19 @@ export class FixedParallelRefine implements ExplorationPolicy {
       if (!cur || leaf.seq > cur.seq) byBranch.set(leaf.branch, leaf);
     }
     const refine = [...byBranch.values()]
-      .filter((leaf) => leaf.attempt < this.refinements)
+      .filter((leaf) => leaf.attempt < refinements)
+      .filter((leaf) => {
+        // Low beta prunes branches that never beat the baseline; high beta
+        // keeps them eligible for a deeper recovery attempt.
+        if (!stopBelowBaseline) return true;
+        return (leaf.deltaVsBaseline ?? -Infinity) > 0;
+      })
       .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity))
       .slice(0, slots)
       .map((leaf) => leaf.id);
     const remaining = slots - refine.length;
     if (remaining > 0) {
-      const roots = this.openBranches(env).slice(0, remaining);
+      const roots = this.openBranches(env, branches).slice(0, remaining);
       return [...refine, ...roots];
     }
     return refine;

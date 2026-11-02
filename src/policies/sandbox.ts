@@ -11,7 +11,6 @@ import type {
 } from "../types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const runnerPath = join(here, "sandboxRunner.ts");
 
 /**
  * Locate the project root without depending on the caller's cwd.
@@ -31,6 +30,25 @@ function packageRoot(): string {
   }
   return here;
 }
+
+/**
+ * Locate `sandboxRunner.ts`.
+ *
+ * Source runs find it next to this module (`src/policies/sandboxRunner.ts`).
+ * The bundled `dist/cli.js` has no TypeScript siblings, so fall back to the
+ * package root's `src/policies/sandboxRunner.ts`. Without this the child
+ * process fails with ERR_MODULE_NOT_FOUND and every replay silently scores
+ * `-Infinity`, which selection then reads as "no policy works".
+ */
+function resolveRunnerPath(): string {
+  const nextToHere = join(here, "sandboxRunner.ts");
+  if (existsSync(nextToHere)) return nextToHere;
+  const fromRoot = join(packageRoot(), "src", "policies", "sandboxRunner.ts");
+  if (existsSync(fromRoot)) return fromRoot;
+  return nextToHere;
+}
+
+const runnerPath = resolveRunnerPath();
 
 /**
  * Resolve the TypeScript runner. Prefer a real executable from node_modules
@@ -67,6 +85,10 @@ export interface SandboxConfig {
   timeoutMs: number;
   memoryMb: number;
   scoreConfig: ReplayScoreConfig;
+  /** Policy beta knob passed to the constructor; defaults to the policy's own. */
+  beta?: number;
+  /** Per-tree replay round cap K2; defaults to the tree's recorded limit. */
+  maxRounds?: number;
 }
 
 /**
@@ -142,7 +164,9 @@ export async function runPolicyInSandbox(opts: {
     tree: opts.tree,
     priorHistory: opts.priorHistory,
     policyId: opts.policyId,
-    scoreConfig: opts.config.scoreConfig
+    scoreConfig: opts.config.scoreConfig,
+    beta: opts.config.beta ?? null,
+    maxRounds: opts.config.maxRounds ?? null
   });
   const started = Date.now();
   const res = await execRunner(payload, opts.config);
@@ -206,6 +230,7 @@ function failedReport(
     best: tree.baselineScore,
     n: 0,
     k: 0,
+    maxParallelism: tree.maxParallelism,
     batches: [],
     revealed: [],
     error,

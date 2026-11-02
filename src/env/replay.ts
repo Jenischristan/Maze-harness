@@ -1,4 +1,4 @@
-import { TreeIndex, ROOT_ID, toObservation } from "../tree.js";
+import { TreeIndex, ROOT_ID, toObservation, withBranchSignals } from "../tree.js";
 import type {
   DiscoveryTree,
   ExplorationEnv,
@@ -60,6 +60,46 @@ export class ReplayEnv implements ExplorationEnv {
 
   observed(): ReadonlyMap<string, Observation> {
     return this.observations;
+  }
+
+  /** Best revealed score, or the baseline when nothing was revealed. */
+  get bestSoFar(): number | null {
+    let best: number | null = null;
+    for (const obs of this.observations.values()) {
+      if (obs.score === null) continue;
+      if (best === null || obs.score > best) best = obs.score;
+    }
+    return best ?? this.baselineScore;
+  }
+
+  /** Number of probes spent so far (revealed non-root nodes). */
+  get budgetSpent(): number {
+    return this.observations.size;
+  }
+
+  /**
+   * Reset the observed prefix to just the root. The full recorded tree is
+   * untouched, so replay can start a fresh rollout over the same world.
+   */
+  reset(): void {
+    this.revealedSet.clear();
+    this.observations.clear();
+    this.batches.length = 0;
+    this.roundsUsed = 0;
+    this.doneFlag = false;
+    this.scoreOfRoot = null;
+  }
+
+  meta(id: string): import("../types.js").CellMeta {
+    const node = id === ROOT_ID ? null : this.index.get(id);
+    return {
+      id,
+      branch: node?.branch ?? -1,
+      attempt: node?.attempt ?? 0,
+      parentId: node?.parentId ?? "",
+      seq: node?.seq ?? -1,
+      tags: id === ROOT_ID ? ["root"] : []
+    };
   }
 
   legalActions(): string[] {
@@ -170,10 +210,22 @@ export class ReplayEnv implements ExplorationEnv {
       full.parentId === ROOT_ID
         ? this.scoreOfRoot
         : (this.index.get(full.parentId)?.score ?? null);
-    const obs = toObservation(full, this.baselineScore, parentScore);
+    const obs = withBranchSignals(
+      toObservation(full, this.baselineScore, parentScore),
+      this.branchObservations(full.branch, full.id)
+    );
     this.revealedSet.add(full.id);
     this.observations.set(full.id, obs);
     return obs;
+  }
+
+  /** Revealed observations on one branch, excluding the just-revealed cell. */
+  private branchObservations(branch: number, excludeId: string): Observation[] {
+    const out: Observation[] = [];
+    for (const obs of this.observations.values()) {
+      if (obs.branch === branch && obs.id !== excludeId) out.push(obs);
+    }
+    return out;
   }
 }
 

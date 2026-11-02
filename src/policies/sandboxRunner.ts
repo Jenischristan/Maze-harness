@@ -8,6 +8,10 @@ interface Payload {
   priorHistory: TreeSummary[];
   policyId: string;
   scoreConfig: ReplayScoreConfig;
+  /** Beta knob handed to the policy constructor, or null for its default. */
+  beta: number | null;
+  /** Replay round cap K2, or null for the tree's recorded limit. */
+  maxRounds: number | null;
 }
 
 async function readStdin(): Promise<string> {
@@ -24,6 +28,7 @@ function failed(tree: DiscoveryTree, policyId: string, error: string, illegal: b
     best: tree.baselineScore,
     n: 0,
     k: 0,
+    maxParallelism: tree.maxParallelism,
     batches: [],
     revealed: [],
     error,
@@ -48,7 +53,7 @@ async function main(): Promise<void> {
 async function run(): Promise<void> {
   const payload = JSON.parse(await readStdin()) as Payload;
   const env = new ReplayEnv(payload.tree, {
-    maxRounds: payload.tree.roundsLimit,
+    maxRounds: payload.maxRounds ?? payload.tree.roundsLimit,
     priorHistory: payload.priorHistory ?? []
   });
   let illegal = false;
@@ -59,7 +64,8 @@ async function run(): Promise<void> {
     if (typeof Ctor !== "function") {
       throw new Error("policy module must default-export a class");
     }
-    const policy = new (Ctor as new (cfg: unknown) => ExplorationPolicy)({});
+    const policyConfig = payload.beta === null ? {} : { beta: payload.beta };
+    const policy = new (Ctor as new (cfg: unknown) => ExplorationPolicy)(policyConfig);
     if (!policy || typeof policy.solve !== "function") {
       throw new Error("policy instance must implement solve(env)");
     }

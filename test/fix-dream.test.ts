@@ -132,6 +132,7 @@ describe("replay objective", () => {
       best: 0,
       n: 4,
       k: 2,
+      maxParallelism: 2,
       batches: [["root", "root"]],
       revealed: [],
       error: null,

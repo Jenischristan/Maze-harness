@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PolicyDeveloper, ReplayReport } from "../types.js";
@@ -6,7 +7,30 @@ import { renderFeedbackMarkdown } from "./report.js";
 import { runCli } from "../agents/cli.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const defaultPromptPath = join(here, "..", "..", "prompts", "policy-developer.md");
+
+/**
+ * Locate the default developer prompt.
+ *
+ * Source runs find it at `<repo>/prompts/policy-developer.md`. The bundled
+ * `dist/cli.js` sits one level below the package root, so resolve the package
+ * root and read `<root>/prompts/policy-developer.md`.
+ */
+function defaultPromptPath(): string {
+  const direct = join(here, "..", "..", "prompts", "policy-developer.md");
+  if (existsSync(direct)) return direct;
+  let dir = here;
+  for (let i = 0; i < 6; i += 1) {
+    if (existsSync(join(dir, "package.json"))) {
+      const candidate = join(dir, "prompts", "policy-developer.md");
+      if (existsSync(candidate)) return candidate;
+      break;
+    }
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return direct;
+}
 
 export interface CliPolicyDeveloperConfig {
   command: string[];
@@ -27,7 +51,7 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
   constructor(cfg: CliPolicyDeveloperConfig) {
     this.cfg = {
       command: cfg.command,
-      promptPath: resolve(cfg.promptPath ?? defaultPromptPath),
+      promptPath: resolve(cfg.promptPath ?? defaultPromptPath()),
       promptMode: cfg.promptMode ?? "stdin",
       timeoutMs: cfg.timeoutMs ?? 900000,
       workDir: cfg.workDir,

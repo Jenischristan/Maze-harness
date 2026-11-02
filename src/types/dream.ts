@@ -66,6 +66,37 @@ export interface Observation {
   error: string | null;
   deltaVsBaseline: number | null;
   deltaVsParent: number | null;
+  /** Number of validated sub-cases, when the evaluator reports it. */
+  nValid: number | null;
+  /** Total sub-cases, when the evaluator reports it. */
+  nTotal: number | null;
+  /** Prefix-safe structural metadata for the cell (see `CellMeta`). */
+  tags: string[];
+  /**
+   * Prefix signals from the paper's `see.policy.observation_signal` helpers.
+   * All are derived from the revealed prefix only.
+   */
+  /** The branch has produced at least one successful improving probe. */
+  branchPromising: boolean;
+  /** Repeated same-class failures with no prior success on the branch. */
+  branchFailedHard: boolean;
+  /** Score strictly improved over the parent (baseline for a root child). */
+  improvedVsParent: boolean;
+  /** Score strictly beats the run's baseline score. */
+  improvedVsBaseline: boolean;
+}
+
+/**
+ * Structural (prefix-safe) metadata for one recorded cell. Mirrors the paper's
+ * `question.meta(cell_id) -> CellMeta`; it never exposes unrevealed scores.
+ */
+export interface CellMeta {
+  id: string;
+  branch: number;
+  attempt: number;
+  parentId: string;
+  seq: number;
+  tags: string[];
 }
 
 export interface TreeSummary {
@@ -84,16 +115,58 @@ export interface ExplorationEnv {
   readonly maxParallelism: number;
   readonly roundsRemaining: number;
   readonly done: boolean;
+  /** Best score so far; bookkeeping only — never a decision input. */
+  readonly bestSoFar: number | null;
+  /** Probes spent so far; bookkeeping only — never a decision input. */
+  readonly budgetSpent: number;
+  /** Reset per-rollout policy state; replay starts from a clean prefix. */
+  reset(): void;
   observed(): ReadonlyMap<string, Observation>;
   legalActions(): string[];
   legalRoots(): number;
   openedBranches(): number[];
+  /** Structural metadata for a cell id (root included). */
+  meta(id: string): CellMeta;
   probeBatch(ids: string[]): Promise<Observation[]>;
   priorHistory(): ReadonlyArray<TreeSummary>;
 }
 
+/**
+ * Next-cycle grid plan, mirroring the paper's `GridPlan(branch_count,
+ * refine_count)`: W branches, and R refinements allowed after each root.
+ */
+export interface GridPlan {
+  branchCount: number;
+  refineCount: number;
+  reason: string;
+}
+
+export interface GridPlanningContext {
+  /** Completed earlier live manifests (one per outer round). */
+  history: ReadonlyArray<{
+    round: number;
+    plannedBranchCount: number;
+    plannedRefineCount: number;
+    openedBranches: number;
+    maxAttempt: number;
+    probes: number;
+    rounds: number;
+    bestScore: number | null;
+    beta: number | null;
+  }>;
+  fallbackBranchCount: number;
+  fallbackRefineCount: number;
+  hardMaxBranchCount: number;
+  hardMaxRefineCount: number;
+  workerCap: number;
+  /** Structural support of the trees that will be replayed this round. */
+  replaySupport: ReadonlyArray<{ traceBranchCount: number; traceRefineCount: number }>;
+}
+
 export interface ExplorationPolicy {
   solve(env: ExplorationEnv): Promise<void>;
+  /** Optional per-cycle grid planner; a runtime fallback is used when absent. */
+  planGrid?(context: GridPlanningContext): GridPlan;
 }
 
 interface ProbeResult {
@@ -152,6 +225,12 @@ export interface ReplayReport {
   best: number;
   n: number;
   k: number;
+  /**
+   * Worker cap W for this replay world. The paper's parallel penalty uses
+   * `ceil(batchSize / W)` with the world's max parallelism, not the batch's
+   * own width.
+   */
+  maxParallelism: number;
   batches: string[][];
   revealed: Observation[];
   error: string | null;

@@ -42,10 +42,14 @@ readonly baselineScore: number          // score of the initial workspace
 readonly maxParallelism: number         // W: maximum actions per batch
 readonly roundsRemaining: number        // rounds left in this rollout
 readonly done: boolean                  // true once the env is closed
+readonly bestSoFar: number | null       // bookkeeping only — never a decision input
+readonly budgetSpent: number            // bookkeeping only — never a decision input
+reset(): void                           // restart the observed prefix at just the root
 observed(): ReadonlyMap<string, Observation>  // revealed nodes only
 legalActions(): string[]                // ["root", ...current leaf ids]
-legalRoots(): number                    // replay: unrevealed root children left; live: Infinity
+legalRoots(): number                    // replay: unrevealed root children left; live: grid-plan cap
 openedBranches(): number[]
+meta(id: string): CellMeta               // .branch .attempt .parentId .seq .tags
 probeBatch(ids: string[]): Promise<Observation[]>  // consumes one round
 priorHistory(): ReadonlyArray<TreeSummary>         // read-only earlier trees
 ```
@@ -59,8 +63,19 @@ valid: boolean,
 failClass: string,           // "ok" | "compile" | "runtime" | "timeout" | "incorrect" | "agent_error" | ...
 error: string | null,
 deltaVsBaseline: number | null,   // normalized (score - baseline) / |baseline|
-deltaVsParent: number | null      // normalized (score - parentScore) / |baseline|
+deltaVsParent: number | null,     // normalized (score - parentScore) / |baseline|
+nValid: number | null,            // validated sub-cases, when the evaluator reports them
+nTotal: number | null,            // total sub-cases
+tags: string[]                    // prefix-safe structural labels
 ```
+
+**Success semantics:** an evaluated observation with `error === null` and
+`failClass === "ok"` is a successful evaluation, even when `valid` is false or
+`nValid`/`nTotal` are unavailable. Never label it repairable solely because
+`valid` is false.
+
+Do **not** use `bestSoFar` or `budgetSpent` to decide what to explore; they are
+bookkeeping only. Derive any decision statistic from `observed()` instead.
 
 ### Batch rules
 
@@ -73,12 +88,25 @@ deltaVsParent: number | null      // normalized (score - parentScore) / |baselin
 - `probeBatch` consumes exactly one round, even if some slots return nothing.
 - Violating any rule scores `-Infinity` on that tree. Never do it.
 
-You do not get the best score so far, the budget spent, hidden nodes, or the full
-tree. Derive every statistic you need from `observed()` and `priorHistory()`.
+You do not get hidden nodes or the full tree. Derive every statistic you need
+from `observed()`, `meta()`, and `priorHistory()`.
 
 ## Replay score
 
-For each tree:
+Offline evaluation sweeps one scalar `beta` in your `_schedule(beta)` and ranks
+the resulting attainment/work/parallelism curve by:
+
+```
+pareto.reward = pareto.auc - lambda * parallel_penalty
+```
+
+`pareto.auc` rewards reaching high per-trace attainment with few **total
+probes**. `parallel_penalty` is the mean of
+`effective_sequential_rounds / total_probes` over the sweep. A serial policy
+has penalty near 1; useful full batches approach `1/W`. So choose only promising
+probes, but batch independent promising probes whenever possible.
+
+Each replay tree also reports a single-cell score:
 
 ```
 V = best − β1·N + β2·N / max(1, k)
@@ -88,9 +116,60 @@ V = best − β1·N + β2·N / max(1, k)
 - `N`: number of revealed non-root nodes — the probes you spent.
 - `k`: rounds you used.
 
-So quality matters most, but wasted probes cost and useful parallelism pays. Keep
-batches full when the probes are independent and promising; stop early once extra
-probes are unlikely to improve `best`.
+## Beta: fixed per run, adaptive across cycles
+
+Read exactly one scalar in the constructor:
+
+```ts
+beta = Math.max(0, Math.min(1, config?.beta ?? 0.6))
+```
+
+1. **Within one replay or live episode:** beta is fixed. Route every behavioral
+   threshold through one `schedule(beta)`. High beta means more width, deeper
+   patience and weaker pruning. Low beta means fewer probes, earlier stagnation
+   stops and stronger pruning. Never change beta from observations inside
+   `solve()`.
+2. **During offline evaluation:** the harness sweeps a fixed beta grid. This
+   measures whether your policy exposes a real attainment/work/parallelism
+   trade-off; it is not online beta adaptation. A policy that ignores beta
+   yields a degenerate (flat) sweep and cannot be ranked on it.
+3. **When proposing the next policy version:** choose the baked-in default beta
+   once, from earlier live cycles and their beta sweeps. It stays fixed for the
+   next live episode.
+
+## Required next-cycle grid planning
+
+Every policy should implement this deterministic method:
+
+```ts
+planGrid(context: GridPlanningContext): GridPlan
+```
+
+It runs before a new live grid is created, makes no within-episode decision, and
+must never inspect a current episode's outcomes. It must always return a
+non-null plan: when history is empty or thin, return an explicit conservative
+bootstrap plan derived from `context.fallbackBranchCount` /
+`context.fallbackRefineCount` / the hard caps, with a factual `reason`.
+
+`GridPlan` is `{ branchCount, refineCount, reason }`: it creates branches
+`0..branchCount-1` and allows `refineCount` refinements after each root. The
+runner clamps to `1 <= branchCount <= context.hardMaxBranchCount` and
+`0 <= refineCount <= context.hardMaxRefineCount`.
+
+Choose width versus depth from evidence, not a default preference:
+
+- many distinct roots improve early while deeper refinements stall: increase
+  width and reduce/hold depth;
+- high gains arrive late on a small, repeatable set of directions: reduce/hold
+  width and increase depth;
+- all explored directions plateau after sufficient depth while meaningful
+  direction classes remain uncovered: increase width;
+- repeated hard failures or strongly redundant directions: reduce both
+  conservatively;
+- conflicting or insufficient history: return the conservative bootstrap plan
+  and say evidence is insufficient.
+
+Include a short, factual `reason` in every plan.
 
 ## What to implement
 

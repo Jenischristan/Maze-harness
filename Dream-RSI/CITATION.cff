@@ -1,0 +1,116 @@
+cff-version: 1.2.0
+message: "If you use Dream-RSI in your research, please cite the paper below."
+title: "Dream-RSI: Recursive Self-Improvement through Evolving Worlds"
+abstract: >-
+  Dream-RSI is a framework for scalable and recursively self-improving exploration.
+  A lightweight orchestration layer makes exploration explicit and programmable while
+  leaving the underlying coding agent unchanged. Accumulated discovery history serves as
+  a replay simulator over the realized search space, providing immediate, low-cost
+  off-policy feedback for evaluating and refining exploration policies without repeated
+  expensive online evaluations.
+type: software
+url: "https://www.dream-rsi.com"
+repository-code: "https://github.com/zhengkid/Dream-RSI"
+date-released: 2026-09-11
+keywords:
+  - recursive self-improvement
+  - exploration policy
+  - off-policy evaluation
+  - LLM agents
+  - code discovery
+  - meta-learning
+authors:
+  - family-names: Zheng
+    given-names: Tong
+    affiliation: "Google; University of Maryland, College Park"
+  - family-names: Wu
+    given-names: Xidong
+    affiliation: Google
+    email: xidongwu@google.com
+  - family-names: Zhang
+    given-names: Zheng
+    affiliation: Google
+    email: zzhangx@google.com
+  - family-names: He
+    given-names: Zhankui
+    affiliation: Google DeepMind
+  - family-names: Zhang
+    given-names: Chaoyi
+    affiliation: Google
+  - family-names: Coleman
+    given-names: Benjamin
+    affiliation: Google DeepMind
+  - family-names: Wei
+    given-names: Ruoqiao
+    affiliation: Google
+  - family-names: Bai
+    given-names: Di
+    affiliation: Google DeepMind
+  - family-names: Liu
+    given-names: Haolin
+    affiliation: University of Virginia
+  - family-names: Liu
+    given-names: Rui
+    affiliation: "University of Maryland, College Park"
+  - family-names: Wang
+    given-names: Xue
+    affiliation: Google
+  - family-names: Zhuan
+    given-names: Yue
+    affiliation: Google
+  - family-names: Kang
+    given-names: Wang-Cheng
+    affiliation: Google DeepMind
+  - family-names: Xiang
+    given-names: Renkai
+    affiliation: Google
+  - family-names: Huang
+    given-names: Heng
+    affiliation: "University of Maryland, College Park"
+  - family-names: Cheng
+    given-names: Xinwu
+    affiliation: Google
+  - family-names: Guo
+    given-names: Yunsong
+    affiliation: Google
+preferred-citation:
+  type: article
+  title: "Dream-RSI: Recursive Self-Improvement through Evolving Worlds"
+  year: 2026
+  # TODO: fill in the real arXiv id once the preprint is posted
+  journal: "arXiv preprint arXiv:XXXX.XXXXX"
+  authors:
+    - family-names: Zheng
+      given-names: Tong
+    - family-names: Wu
+      given-names: Xidong
+    - family-names: Zhang
+      given-names: Zheng
+    - family-names: He
+      given-names: Zhankui
+    - family-names: Zhang
+      given-names: Chaoyi
+    - family-names: Coleman
+      given-names: Benjamin
+    - family-names: Wei
+      given-names: Ruoqiao
+    - family-names: Bai
+      given-names: Di
+    - family-names: Liu
+      given-names: Haolin
+    - family-names: Liu
+      given-names: Rui
+    - family-names: Wang
+      given-names: Xue
+    - family-names: Zhuan
+      given-names: Yue
+    - family-names: Kang
+      given-names: Wang-Cheng
+    - family-names: Xiang
+      given-names: Renkai
+    - family-names: Huang
+      given-names: Heng
+    - family-names: Cheng
+      given-names: Xinwu
+    - family-names: Guo
+      given-names: Yunsong
