@@ -3,17 +3,6 @@ import { ReplayEnv } from "../src/env/replay.js";
 import { ROOT_ID } from "../src/tree.js";
 import { syntheticTree } from "./synthetic.js";
 
-/**
- * Regression tests for the environment audit findings:
- *
- *   1. `ReplayEnv` had a `scoreOfRoot` field that was never assigned, so a root
- *      child's parent delta only worked by falling through
- *      `toObservation`'s `?? baseline`. Replay now passes the baseline as the
- *      root's score explicitly.
- *   2. Live and replay must compute root-child parent deltas identically; live
- *      used to pass `null`, which also depended on the same fallback.
- */
-
 function tree() {
   return syntheticTree({
     seed: 13,

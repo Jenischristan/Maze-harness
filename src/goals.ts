@@ -13,7 +13,7 @@ export interface Goal {
   status: GoalStatus;
   createdAt: string;
   updatedAt: string;
-  /** Session (SessionStore runId) that owns this goal. Goals never leak across sessions. */
+
   sessionId?: string;
 }
 
@@ -31,7 +31,6 @@ interface GoalStore {
   find(prefix: string): Goal | null;
 }
 
-/** Persistent goal list stored at `<runsDir>/goals.json`. */
 export class FileGoalStore implements GoalStore {
   readonly dir: string;
   readonly path: string;
@@ -56,7 +55,7 @@ export class FileGoalStore implements GoalStore {
 
   async save(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    // Atomic so two instances (or a crash) cannot leave goals.json truncated.
+
     await writeFileAtomic(this.path, `${JSON.stringify(this.goals, null, 2)}\n`);
   }
 
@@ -71,7 +70,7 @@ export class FileGoalStore implements GoalStore {
       updatedAt: now,
       sessionId
     };
-    // Only one goal is active per session.
+
     for (const g of this.goals) {
       if (g.status === "active" && g.sessionId === sessionId) g.status = "paused";
     }
@@ -97,13 +96,23 @@ export class FileGoalStore implements GoalStore {
   }
 
   remove(id: string): boolean {
-    const idx = this.goals.findIndex((g) => g.id === id || g.id.startsWith(id));
+    const prefix = id.trim();
+    // An empty id must never match (startsWith("") is always true and would
+    // silently delete the first goal). Ambiguous prefixes are rejected too.
+    if (!prefix) return false;
+    const exact = this.goals.findIndex((g) => g.id === prefix);
+    if (exact !== -1) {
+      this.goals.splice(exact, 1);
+      return true;
+    }
+    const matches = this.goals.filter((g) => g.id.startsWith(prefix));
+    if (matches.length !== 1) return false;
+    const idx = this.goals.findIndex((g) => g.id === matches[0]!.id);
     if (idx === -1) return false;
     this.goals.splice(idx, 1);
     return true;
   }
 
-  /** Active goal, scoped to a session when a sessionId is provided. */
   active(sessionId?: string): Goal | null {
     if (sessionId === undefined) {
       return this.goals.find((g) => g.status === "active") ?? null;
@@ -111,7 +120,6 @@ export class FileGoalStore implements GoalStore {
     return this.goals.find((g) => g.status === "active" && g.sessionId === sessionId) ?? null;
   }
 
-  /** Goals belonging to one session. Legacy goals without a sessionId are excluded. */
   forSession(sessionId: string | undefined): Goal[] {
     if (!sessionId) return [];
     return this.goals.filter((g) => g.sessionId === sessionId);
@@ -138,7 +146,6 @@ function isGoal(value: unknown): value is Goal {
   );
 }
 
-/** Render the active goal as a system-prompt section. */
 export function goalSection(goal: Goal | null): string {
   if (!goal) return "";
   const lines = [`## Active goal (${goal.id})`, `**${goal.title}**`];

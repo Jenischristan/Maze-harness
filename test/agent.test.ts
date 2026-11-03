@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAgentLoop, contextUsage } from "../src/agent/loop.js";
-import { OpenAICompatProvider, ScriptedProvider } from "../src/agent/provider.js";
+import { OpenAICompatProvider, ScriptedProvider, parseSse } from "../src/agent/provider.js";
 import { ToolExecutor, ToolRegistry } from "../src/tools/index.js";
 import { Hooks } from "../src/tools/hooks.js";
 import { DEFAULT_PERMISSION_POLICY } from "../src/tools/permissions.js";
@@ -210,6 +210,80 @@ describe("OpenAI-compatible provider", () => {
     });
     const summary = await provider.summarize([{ role: "user", content: "history" }]);
     expect(summary).toBe("the summary");
+  });
+});
+
+function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  let i = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (i >= chunks.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(enc.encode(chunks[i++]!));
+    }
+  });
+}
+
+describe("SSE parsing", () => {
+  it("yields normal frames, named events and multi-line payloads", async () => {
+    const frames: Array<{ event: string; data: string }> = [];
+    for await (const f of parseSse(sseStream(["data: a\n\nevent: x\ndata: b\r\n\r\n"]))) {
+      frames.push(f);
+    }
+    expect(frames).toEqual([
+      { event: "", data: "a" },
+      { event: "x", data: "b" }
+    ]);
+  });
+
+  it("emits a final frame with no trailing newline instead of dropping it", async () => {
+    // Regression: the parser only dispatched on a blank line, so a stream that
+    // ended right after `data: ...` lost the last event entirely.
+    const frames: Array<{ event: string; data: string }> = [];
+    for await (const f of parseSse(sseStream(["data: tail"]))) frames.push(f);
+    expect(frames).toEqual([{ event: "", data: "tail" }]);
+  });
+
+  it("keeps the pending payload separate from the previous frame", async () => {
+    // Regression: the trailing event used to be concatenated onto the prior
+    // frame's data, corrupting streamed tool-call arguments.
+    const frames: Array<{ event: string; data: string }> = [];
+    for await (const f of parseSse(sseStream(["data: a\n\ndata: b"]))) frames.push(f);
+    expect(frames).toEqual([
+      { event: "", data: "a" },
+      { event: "", data: "b" }
+    ]);
+  });
+
+  it("reassembles a frame split mid-line across chunks", async () => {
+    const frames: Array<{ event: string; data: string }> = [];
+    for await (const f of parseSse(sseStream(["data: he", "llo\n", "\n"]))) frames.push(f);
+    expect(frames).toEqual([{ event: "", data: "hello" }]);
+  });
+
+  it("streams a tool call end-to-end through the provider", async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"a.txt\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]"
+    ];
+    const fetchImpl = (async () =>
+      new Response(sseStream(sse), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      })) as typeof fetch;
+    const provider = new OpenAICompatProvider({ baseUrl: "http://test", model: "m", fetchImpl });
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    let text = "";
+    for await (const ev of provider.stream([{ role: "user", content: "go" }], [])) {
+      if (ev.type === "tool_call") calls.push({ name: ev.call.name, arguments: ev.call.arguments });
+      if (ev.type === "text") text += ev.delta;
+    }
+    expect(calls).toEqual([{ name: "read", arguments: { path: "a.txt" } }]);
+    expect(text).toBe("");
   });
 });
 

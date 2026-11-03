@@ -3,7 +3,6 @@ import { decide, networkAllowed } from "./permissions.js";
 import { truncateOutput } from "./truncate.js";
 import { FETCH_HARD_MAX_BYTES, FETCH_MAX_BYTES } from "./limits.js";
 
-/** Redirects are followed manually so every hop is re-validated. */
 const MAX_REDIRECTS = 5;
 const TIMEOUT_MS = 30_000;
 
@@ -11,7 +10,6 @@ function deny(message: string, error: string): ToolResult {
   return { callId: "", name: "fetch", ok: false, content: message, error };
 }
 
-/** Read at most `limit` bytes from a response body without buffering the rest. */
 async function readCapped(res: Response, limit: number): Promise<{ buf: Buffer; over: boolean }> {
   const reader = res.body?.getReader();
   if (!reader) {
@@ -41,18 +39,6 @@ async function readCapped(res: Response, limit: number): Promise<{ buf: Buffer; 
   return { buf: Buffer.concat(chunks), over };
 }
 
-/**
- * HTTP GET tool.
- *
- * Exists mainly so the permission policy's network allowlist is actually
- * enforced: `networkAllowed` was previously exported but wired to nothing, so
- * the "network allowlist" in the policy was inert and `curl` via bash was the
- * only network path (controlled only by a deny-list substring).
- *
- * Redirects are followed manually (`redirect: "manual"`). The default policy
- * follows them, which let a permitted host 302 to `127.0.0.1` or a metadata
- * endpoint and return the body without any further allowlist check.
- */
 export const fetchTool: ToolDefinition = {
   name: "fetch",
   description:
@@ -101,7 +87,7 @@ export const fetchTool: ToolDefinition = {
         res = await fetch(current, { method: "GET", redirect: "manual", signal });
         const location = res.headers.get("location");
         if (res.status < 300 || res.status >= 400 || !location) break;
-        // Drain the redirect body so the socket is released.
+
         await res.arrayBuffer().catch(() => undefined);
         if (hop >= MAX_REDIRECTS) {
           return deny(`too many redirects (>${MAX_REDIRECTS})`, "too-many-redirects");
@@ -125,8 +111,7 @@ export const fetchTool: ToolDefinition = {
       }
       if (!res) return deny("fetch produced no response", "no-response");
       const { buf, over } = await readCapped(res, limit);
-      // Route through the shared truncator so a truncated body carries a page
-      // token the model can redeem with the `page` tool.
+
       const t = truncateOutput(buf.toString("utf8"), limit, "head");
       return {
         callId: "",

@@ -14,11 +14,11 @@ interface Payload {
   priorHistory: TreeSummary[];
   policyId: string;
   scoreConfig: ReplayScoreConfig;
-  /** Beta knob handed to the policy constructor, or null for its default. */
+
   beta: number | null;
-  /** Effective grid plan for the replay world, when the runner has one. */
+
   plan: { branchCount: number; refineCount: number } | null;
-  /** Replay round cap K2, or null for the tree's recorded limit. */
+
   maxRounds: number | null;
 }
 
@@ -52,9 +52,6 @@ function failed(
 }
 
 async function main(): Promise<void> {
-  // Keep the child alive while an untrusted policy hangs. Without an active
-  // handle, Node exits as soon as the pending promise stops holding the loop,
-  // which would let a hang masquerade as a clean exit before the timeout fires.
   const keepAlive = setInterval(() => {}, 1 << 30);
   try {
     await run();

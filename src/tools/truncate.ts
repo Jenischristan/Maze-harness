@@ -24,11 +24,6 @@ function evict(): void {
   }
 }
 
-/**
- * Truncate `text` to at most `maxBytes`. `head` keeps the beginning,
- * `tail` keeps the end (errors usually appear last). A page token lets the
- * caller retrieve the full text later via getPage().
- */
 export function truncateOutput(
   text: string,
   maxBytes: number,
@@ -42,14 +37,11 @@ export function truncateOutput(
   pageCache.set(token, { text, createdAt: Date.now() });
   evict();
   const buf = Buffer.from(text, "utf8");
-  // Slice on a UTF-8 boundary: cutting at an arbitrary byte offset would emit
-  // U+FFFD for a split multibyte sequence (CJK, emoji).
+
   const start = mode === "tail" ? utf8Start(buf, buf.length - maxBytes) : 0;
   const end = mode === "tail" ? buf.length : utf8End(buf, maxBytes);
   const kept = buf.subarray(start, end).toString("utf8");
-  // Report the bytes actually kept, not the requested budget: the UTF-8
-  // boundary trim can drop a few extra bytes, and callers that sum
-  // keptBytes + droppedBytes expect them to add up to the input size.
+
   const keptBytes = end - start;
   const dropped = bytes - keptBytes;
   const marker = `[truncated ${dropped} bytes; full output page=${token}]`;
@@ -62,14 +54,12 @@ export function truncateOutput(
   };
 }
 
-/** First index >= `i` that starts a UTF-8 sequence (not a continuation byte). */
 function utf8Start(buf: Buffer, i: number): number {
   let idx = Math.max(0, i);
   while (idx < buf.length && (buf[idx]! & 0xc0) === 0x80) idx += 1;
   return idx;
 }
 
-/** Largest index <= `i` that ends on a UTF-8 boundary. */
 function utf8End(buf: Buffer, i: number): number {
   let idx = Math.min(buf.length, Math.max(0, i));
   while (idx > 0 && (buf[idx]! & 0xc0) === 0x80) idx -= 1;

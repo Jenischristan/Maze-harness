@@ -1,16 +1,3 @@
-/**
- * Fuzz + property tests for the Dream-RSI core:
- *   src/tree.ts, src/env/replay.ts, src/score.ts
- *
- * Invariants checked:
- *  - replay never reveals an unrevealed node out of order and never leaks
- *    future structure (legalRoots/openedBranches only reflect observations);
- *  - reset() restores the exact initial state and a replay is deterministic;
- *  - rounds never exceed maxRounds and done implies no further legal actions;
- *  - score is finite for finite inputs, equals baseline when nothing is
- *    revealed, and matches the documented formula;
- *  - beta sweep produces a monotone AUC in [0, 1] and a correct degeneracy flag.
- */
 import { describe, expect, it } from "vitest";
 import { ROOT_ID, TreeIndex, toObservation, withBranchSignals } from "../../src/tree.js";
 import { IllegalBatchError, ReplayEnv } from "../../src/env/replay.js";
@@ -83,9 +70,7 @@ async function randomRollout(env: ReplayEnv, rng: Rng): Promise<void> {
       await env.probeBatch([]);
       return;
     }
-    // ROOT_ID stops being a usable action once every root child is revealed;
-    // `legalActions()` still lists it, but the env rejects a batch containing
-    // it then.
+
     const pool = legal.filter((id) => id !== ROOT_ID || env.legalRoots() > 0);
     while (batch.length < want && pool.length > 0) {
       const idx = rng.int(0, pool.length - 1);
@@ -166,9 +151,7 @@ describe("fuzz: ReplayEnv", () => {
       let prevRevealed = 0;
       while (!env.done) {
         const legal = env.legalActions();
-        // `legalActions()` always lists `root` (the paper's A(T) includes r)
-        // while the env is live; whether it is *usable* is signalled by
-        // `legalRoots()`, and validateBatch rejects it when that is 0.
+
         expect(legal).toContain(ROOT_ID);
         for (const id of legal) {
           if (id !== ROOT_ID) {
@@ -178,9 +161,7 @@ describe("fuzz: ReplayEnv", () => {
         expect(env.budgetSpent).toBe(env.observed().size);
         const rootsLeft = env.legalRoots() > 0;
         const eligible = legal.filter((id) => id !== ROOT_ID || rootsLeft).length;
-        // An empty batch ends the rollout. Zero `maxRounds` also ends it, but
-        // `done` only flips after the first probeBatch, so don't require
-        // done===true here; the loop condition re-checks it.
+
         if (env.maxRounds === 0) {
           await env.probeBatch([]);
           break;
@@ -190,10 +171,7 @@ describe("fuzz: ReplayEnv", () => {
           await env.probeBatch([]);
           break;
         }
-        // A legal ROOT_ID is only eligible while unrevealed root children
-        // remain; `legalActions()` keeps listing it as an action even when no
-        // root child is left, and the env rightly rejects that batch. Never
-        // sample it once `legalRoots()` is 0.
+
         const pool = legal.filter((id) => id !== ROOT_ID || rootsLeft);
         const batch: string[] = [];
         while (batch.length < want && pool.length > 0) {
@@ -374,9 +352,7 @@ describe("fuzz: observation signals", () => {
       };
       const obs = toObservation(node, baseline, parentScore);
       const scale = Math.max(Math.abs(baseline), 1);
-      // A root child's parent is the root, whose score is the baseline; the
-      // paper's parent->child gain therefore uses the baseline when no parent
-      // score is supplied. Only a null score yields null deltas.
+
       const effectiveParent = parentScore ?? baseline;
       if (score === null) {
         expect(obs.deltaVsBaseline).toBeNull();
@@ -421,8 +397,6 @@ describe("fuzz: computeScore", () => {
       expect(comp.k).toBe(rounds);
       const widthForEmpty = batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0);
       if (revealed.length === 0) {
-        // The width penalty is a trajectory property, not a probe-count one, so
-        // it still applies when nothing was revealed; the probe terms vanish.
         expect(comp.penalty).toBeCloseTo((config.lambda ?? 0) * widthForEmpty, 9);
         expect(comp.bonus).toBe(0);
       }
@@ -437,8 +411,7 @@ describe("fuzz: computeScore", () => {
       const width = batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0);
       const n = revealed.length;
       const k = Math.max(1, rounds);
-      // Paper Eq. (1) base, plus the documented opt-in rho budget terms when
-      // rho is explicitly set (gamma = 0.01).
+
       const expectedPenalty = (config.beta1 ?? 0) * n + (config.lambda ?? 0) * width;
       const expectedBonus = n > 0 ? ((config.beta2 ?? 0) * n) / k : 0;
       const rho = config.rho === undefined ? null : Math.max(0, Math.min(1, config.rho));
@@ -524,8 +497,7 @@ describe("fuzz: synthetic trees stay internally consistent", () => {
     "a tree rebuilt from its observations scores the same twice",
     fuzzCases({ seed: 0xd14, runs: 40 }, async (rng) => {
       const tree = randomTree(rng);
-      // Record one rollout, then replay exactly those batches into a fresh
-      // env. Replay is deterministic, so the two must score identically.
+
       const env = new ReplayEnv(tree);
       await randomRollout(env, rng);
       const batches = env.batchesTaken();

@@ -85,10 +85,7 @@ export function toObservation(
   const scale = Math.max(Math.abs(baseline), 1);
   const diag = node.diagnostics;
   const counts = readValidCounts(diag);
-  // A root child's parent is the root, whose score is the baseline. Callers pass
-  // `null` for "no revealed parent"; falling back to the baseline keeps
-  // `deltaVsParent`/`improvedVsParent` consistent with the paper's
-  // `parent->child gain` for root children instead of silently returning null.
+
   const effectiveParent = parentScore ?? baseline;
   return {
     id: node.id,
@@ -112,20 +109,6 @@ export function toObservation(
   };
 }
 
-/**
- * Derive the paper's `see.policy.observation_signal` helpers from the revealed
- * prefix of one branch:
- *
- *   branch_promising        a successful probe with error === null and
- *                           fail_class === "ok" raised the score over parent
- *                           (or over baseline for a root child);
- *   branch_failed_hard      at least two same-class failures with no successful
- *                           probe on the branch in this observation episode;
- *   probe_improved_vs_parent / probe_improved_vs_baseline  the per-cell deltas.
- *
- * Success semantics follow the paper: a successful evaluation is one with
- * `error === null` and `fail_class === "ok"`, even when `valid` is false.
- */
 export function withBranchSignals(
   obs: Observation,
   earlierOnBranch: ReadonlyArray<Observation>
@@ -148,11 +131,6 @@ export function withBranchSignals(
   };
 }
 
-/**
- * Pull prefix-safe counters out of evaluator diagnostics without assuming a
- * shape: `n_valid`/`nValid` and `n_total`/`nTotal` are recognised, and any
- * `tags` array of strings is passed through.
- */
 function readValidCounts(diag: unknown): {
   nValid: number | null;
   nTotal: number | null;

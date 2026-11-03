@@ -7,22 +7,21 @@ import { truncateOutput } from "./truncate.js";
 
 const MAX_LINES = 2000;
 
-/**
- * Extensions we know are binary. Reading one as UTF-8 silently produces
- * replacement characters and a useless "content" the model then reasons about,
- * so refuse with a clear message instead.
- */
+export const IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+};
+
+const DOCUMENT_TYPES: Record<string, string> = { ".pdf": "application/pdf" };
+
 const BINARY_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
   ".bmp",
   ".ico",
   ".tiff",
   ".avif",
-  ".pdf",
   ".zip",
   ".gz",
   ".tgz",
@@ -59,7 +58,6 @@ const BINARY_EXTENSIONS = new Set([
   ".pyc"
 ]);
 
-/** Detect binary content by a NUL byte in the first 8 KiB. */
 function looksBinary(buf: Buffer): boolean {
   const limit = Math.min(buf.length, 8192);
   for (let i = 0; i < limit; i += 1) {
@@ -69,7 +67,6 @@ function looksBinary(buf: Buffer): boolean {
 }
 
 function decodeText(buf: Buffer): { text: string; encoding: string } {
-  // Strip a UTF-8 BOM so the model does not see an invisible leading character.
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
     return { text: buf.subarray(3).toString("utf8"), encoding: "utf8-bom" };
   }
@@ -79,8 +76,6 @@ function decodeText(buf: Buffer): { text: string; encoding: string } {
 }
 
 function summarizeNotebook(text: string): string | null {
-  // A .ipynb is JSON; render its cells as a compact transcript rather than
-  // dumping raw JSON that the model has to parse by eye.
   try {
     const nb = JSON.parse(text) as {
       cells?: Array<{ cell_type?: string; source?: string | string[]; outputs?: unknown[] }>;
@@ -100,10 +95,25 @@ function summarizeNotebook(text: string): string | null {
   }
 }
 
+async function pdfToText(path: string): Promise<string | null> {
+  const { execFile } = await import("node:child_process");
+  return new Promise((resolvePromise) => {
+    execFile(
+      "pdftotext",
+      ["-layout", path, "-"],
+      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err) resolvePromise(null);
+        else resolvePromise(String(stdout));
+      }
+    );
+  });
+}
+
 export const readTool: ToolDefinition = {
   name: "read",
   description:
-    "Read a UTF-8 text file relative to the workspace. Optionally paginate with offset/limit (1-indexed line numbers). Notebooks (.ipynb) are rendered as cells. Binary files are refused. Output is truncated to 2000 lines or the byte budget, with a page token to retrieve the full content.",
+    "Read a file relative to the workspace. Text files return numbered lines (offset/limit pagination, 1-indexed). Images (png/jpg/gif/webp) return an image content block. PDFs return extracted text when `pdftotext` is available. Notebooks (.ipynb) are rendered as cells. Binary files are refused.",
   parameters: {
     type: "object",
     properties: {
@@ -122,12 +132,65 @@ export const readTool: ToolDefinition = {
       const full = resolveInside(ctx.workspaceDir, path);
       const buf = await readFile(full);
       const ext = extname(path).toLowerCase();
+      ctx.readFiles.add(full);
+      ctx.readHashes?.set(full, createHash("sha1").update(buf).digest("hex"));
+
+      const imageType = IMAGE_TYPES[ext];
+      if (imageType) {
+        if (!ctx.mediaTypes?.includes(imageType)) {
+          return {
+            callId: "",
+            name: "read",
+            ok: true,
+            content: `[image ${path}: ${buf.length} bytes, ${imageType}] The active model does not accept images; describe what you need from it or ask the user.`,
+            data: { path: full, bytes: buf.length, mediaType: imageType }
+          };
+        }
+        const block = {
+          type: "image" as const,
+          mediaType: imageType,
+          data: buf.toString("base64")
+        };
+        return {
+          callId: "",
+          name: "read",
+          ok: true,
+          content: `[image ${path}: ${buf.length} bytes, ${imageType}]`,
+          data: { path: full, bytes: buf.length, mediaType: imageType },
+          contentBlocks: [block]
+        };
+      }
+      const docType = DOCUMENT_TYPES[ext];
+      if (docType) {
+        const text = await pdfToText(full);
+        if (text === null) {
+          return {
+            callId: "",
+            name: "read",
+            ok: false,
+            content: `cannot extract text from ${path}: pdftotext is not installed. Install poppler-utils, or convert the PDF to text first.`,
+            error: "pdf-no-extractor"
+          };
+        }
+        const lines = text.split("\n");
+        const selected = lines.slice(offset - 1, offset - 1 + limit);
+        const numbered = selected.map((l, i) => `${offset + i}\t${l}`).join("\n");
+        const t = truncateOutput(numbered, ctx.maxOutputBytes, "head");
+        return {
+          callId: "",
+          name: "read",
+          ok: true,
+          content: t.text,
+          data: { path: full, lines: selected.length, totalLines: lines.length, mediaType: docType }
+        };
+      }
+
       if (BINARY_EXTENSIONS.has(ext) || looksBinary(buf)) {
         return {
           callId: "",
           name: "read",
           ok: false,
-          content: `refusing to read ${path}: binary file (${buf.length} bytes, ${ext || "no extension"}). Use a dedicated tool for images/PDFs/notebooks.`,
+          content: `refusing to read ${path}: binary file (${buf.length} bytes, ${ext || "no extension"})`,
           error: "binary-file"
         };
       }
@@ -137,8 +200,6 @@ export const readTool: ToolDefinition = {
       const selected = lines.slice(offset - 1, offset - 1 + limit);
       const numbered = selected.map((l, i) => `${offset + i}\t${l}`).join("\n");
       const t = truncateOutput(numbered, ctx.maxOutputBytes, "head");
-      ctx.readFiles.add(full);
-      ctx.readHashes?.set(full, createHash("sha1").update(buf).digest("hex"));
       return {
         callId: "",
         name: "read",

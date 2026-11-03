@@ -50,8 +50,7 @@ export class CommandEvaluator implements Evaluator {
       }
       const child = spawn(cmd, finalArgs, {
         cwd: this.cfg.cwd ?? process.cwd(),
-        // The evaluator is task code from the workspace and is untrusted: it
-        // gets the child allowlist, not the harness's provider credentials.
+
         env: taskChildEnv(process.env, this.cfg.env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true
@@ -72,8 +71,7 @@ export class CommandEvaluator implements Evaluator {
         timedOut = true;
         kill();
       }, this.cfg.timeoutMs);
-      // StringDecoder keeps an incomplete trailing UTF-8 sequence intact; a
-      // split multi-byte code point used to become U+FFFD in diagnostics.
+
       const outSink = collectText(child.stdout);
       const errSink = collectText(child.stderr);
       const settle = (): void => signal?.removeEventListener("abort", onAbort);

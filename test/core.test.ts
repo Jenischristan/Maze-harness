@@ -137,8 +137,6 @@ describe("score", () => {
   });
 
   it("matches Eq. (1) exactly: V = best - b1*N + b2*N/k with no budget term", () => {
-    // Paper Eq. (1) is the whole replay objective. There is no budget-
-    // preference term, so a rho value must not change the score.
     const comp = computeScore({
       baselineScore: 0,
       revealedScores: [1, 1, 1],
@@ -151,10 +149,6 @@ describe("score", () => {
   });
 
   it("rho=0 rewards spend and rho=1 rewards fewer rounds (documented budget terms)", () => {
-    // README documents the opt-in rho budget terms:
-    //   - rho*gamma*N/k   speed preference (fewer rounds)
-    //   + (1-rho)*gamma*N spend preference (more probes)
-    // with gamma = 0.01 only when rho is explicitly set.
     const spendPref = computeScore({
       baselineScore: 0,
       revealedScores: [1, 1, 1, 1],
@@ -167,9 +161,9 @@ describe("score", () => {
       rounds: 2,
       config: { beta1: 0, beta2: 0, normalize: "none", rho: 1 }
     });
-    // rho=0: +gamma*N = 0.01*4 = +0.04 over best.
+
     expect(spendPref.score).toBeCloseTo(1 + 0.04, 12);
-    // rho=1: -gamma*N/k = -0.01*4/2 = -0.02 over best.
+
     expect(speedPref.score).toBeCloseTo(1 - 0.02, 12);
     expect(spendPref.score).toBeGreaterThan(speedPref.score);
   });

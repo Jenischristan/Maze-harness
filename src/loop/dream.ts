@@ -46,33 +46,23 @@ export interface DreamConfig {
   maxParallelism: number;
   roundsLimit: number;
   scoreConfig: ReplayScoreConfig;
-  /** rho grid for offline selection; defaults to RHO_GRID. */
+
   scoreGrid?: readonly number[];
   sandbox: { timeoutMs: number; memoryMb: number };
-  /** Abort signal (e.g. Ctrl-C); stops the rollout at the next boundary. */
+
   signal?: AbortSignal;
   holdoutLast?: boolean;
   mode: "dream" | "fixed";
   runRoot?: string;
-  /**
-   * Beta grid for the paper's evaluation-time sweep. `null` disables it and
-   * selection falls back to the rho-grid mean.
-   */
+
   betaGrid?: readonly number[] | null;
-  /** Lambda in `pareto.reward = auc - lambda * parallel_penalty`. */
+
   paretoLambda?: number;
-  /** Hard caps for the policy's next-cycle grid plan. */
+
   gridCaps?: { maxBranchCount: number; maxRefineCount: number };
-  /**
-   * Baked-in beta used for the first online cycle. Later cycles get their beta
-   * from the paper's cross-cycle default-beta rule over live manifests; pass
-   * `null` to disable beta selection entirely.
-   */
+
   initialBeta?: number | null;
-  /**
-   * Continue a previously interrupted run from its last completed round.
-   * Defaults to true; pass false to start over and overwrite the run state.
-   */
+
   resume?: boolean;
   onEvent?: (event: DreamEvent) => void;
 }
@@ -122,14 +112,6 @@ export interface DreamResult {
   }>;
 }
 
-/**
- * Per-round facts that the *next* cycle's grid planner needs (paper Appendix
- * B.2: "history: completed earlier live manifests, including prior
- * planned/effective grids, actual opened width/depth, probe work, decision
- * rounds, scores, and beta"). These are captured at online time because the
- * tree alone does not record the plan the runner actually used, nor the beta
- * it was compiled with.
- */
 export interface CycleHistory {
   tree: DiscoveryTree;
   plan: GridPlan;
@@ -142,10 +124,7 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   const log = getLogger("loop.dream", { runId: cfg.runId, mode: cfg.mode });
   const store = new RunStore({ rootDir: runRoot, runId: cfg.runId });
   await store.init();
-  // Two runs sharing `runs/` raced on `_current`, manifest files and the
-  // `policies/build/<id>.ts` sources, silently mixing two experiments' history.
-  // One exclusive, PID-stamped lock per run root makes that impossible. The
-  // lock is reclaimed automatically when its owner is gone.
+
   const lock = new RunLock({
     path: runLockPath(runRoot),
     runId: cfg.runId,
@@ -186,15 +165,9 @@ async function runDreamLocked(
   const results: DreamResult["rounds"] = [];
   let cumulativeCalls = 0;
   const manifestDir = join(store.dir, "reports");
-  // Beta baked into the policy for the upcoming cycle. The first cycle uses
-  // the caller's initial beta; later cycles follow the paper's cross-cycle
-  // default-beta rule over the archived live manifests and sweeps.
+
   let bakedBeta: number | null = cfg.initialBeta ?? null;
 
-  // Resume at the round boundary. A killed run previously restarted from
-  // round 1, re-ran every discovery cycle and overwrote the earlier trees.
-  // `state.json` is written after each completed round; the archived trees and
-  // live manifests are the source of truth for the rounds already done.
   let startRound = 1;
   if (cfg.resume !== false) {
     const resumed = await resumeState(cfg, store, log);
@@ -244,10 +217,7 @@ async function runDreamLocked(
     const policyModule = (await import(compiled.bundlePath)) as {
       default: new (cfg: unknown) => import("../types.js").ExplorationPolicy;
     };
-    // The grid planner is consulted on a probe instance first: `planGrid` runs
-    // before a new live grid exists and must not see the cycle's outcomes. Its
-    // plan is then handed to the policy that actually drives `solve()`, through
-    // the constructor, so the plan is a hard bound in both live and replay.
+
     const planner = new policyModule.default(bakedBeta === null ? {} : { beta: bakedBeta });
     const priorHistory = trees.map((t) => summaryFromTree(t));
 
@@ -315,9 +285,7 @@ async function runDreamLocked(
       best: bestOf(tree),
       calls: cumulativeCalls
     });
-    // Live-cycle sidecar: what this cycle actually did, including the beta the
-    // policy was compiled with. Later cycles read these (and the archived beta
-    // sweeps) to choose their baked-in default beta.
+
     const onlineManifest = manifestFromTree({
       runId: cfg.runId,
       round,
@@ -347,8 +315,7 @@ async function runDreamLocked(
         scoreGrid: cfg.scoreGrid,
         betaGrid: cfg.betaGrid,
         paretoLambda: cfg.paretoLambda,
-        // Replay under the same grid plan the online cycle was run with, so the
-        // plan bounds the policy identically in live and replay.
+
         plan,
         sandbox: cfg.sandbox,
         policyWorkDir: `${store.dir}/policies/work`,
@@ -418,8 +385,7 @@ async function runDreamLocked(
     }
     await store.saveState({
       runId: cfg.runId,
-      // Record the mode so `report` can classify a run without guessing from
-      // its id; `--run-id` accepts any identifier.
+
       mode: cfg.mode,
       round,
       policyId,
@@ -440,7 +406,6 @@ async function runDreamLocked(
 }
 
 interface ResumedState {
-  /** Last fully completed round, or 0 when nothing was recorded. */
   round: number;
   policyId: string;
   policySource: string;
@@ -452,18 +417,6 @@ interface ResumedState {
   beta: number | null;
 }
 
-/**
- * Reconstruct the loop state from a previous run's on-disk artifacts.
- *
- * A run writes `state.json` after every completed round, plus each tree under
- * `trees/` and a live manifest under `reports/`. `state.json` is the pointer to
- * "how far did we get"; the trees and manifests are re-read from disk so a
- * resumed run replays the *same* history the offline phase would have used,
- * rather than trusting a partially serialized copy.
- *
- * Returns null when there is nothing to resume (no state, or the run already
- * finished all its rounds, or the recorded state is unreadable).
- */
 async function resumeState(
   cfg: DreamConfig,
   store: RunStore,
@@ -489,8 +442,7 @@ async function resumeState(
     return null;
   }
   const trees = await store.loadTrees();
-  // Only keep the prefix that `recordedRound` actually completed, so a tree
-  // written by an interrupted round is not counted twice.
+
   const completed = trees.filter((t) => t.treeIndex < recordedRound);
   if (completed.length !== recordedRound) {
     log.warn("resume state disagrees with archived trees; starting the incomplete round over", {
@@ -515,7 +467,7 @@ async function resumeState(
         };
     cycleHistory.push({ tree, plan, beta: manifest?.beta ?? null, rounds: manifest?.rounds ?? 0 });
   }
-  // Each tree's prior history is every tree before it, matching the live run.
+
   const histories = new Map<number, import("../types.js").TreeSummary[]>();
   for (const tree of completed) {
     histories.set(
@@ -545,18 +497,10 @@ async function resumeState(
   };
 }
 
-/**
- * Ask the current policy for its next-cycle grid plan (paper Appendix B.2
- * "Required next-cycle grid planning"). The plan always comes back non-null:
- * when the policy has no `planGrid`, returns an invalid plan, or throws, the
- * runtime falls back to a conservative bootstrap plan derived from the caps.
- * The returned plan is also clamped to the hard caps and worker cap so a
- * policy can never create a grid beyond what the runner supports.
- */
 export async function planGridForRound(opts: {
   policy: ExplorationPolicy;
   round: number;
-  /** Completed cycles with the plan/beta/rounds the runner actually used. */
+
   history: ReadonlyArray<CycleHistory>;
   caps: { maxBranchCount: number; maxRefineCount: number };
   workerCap: number;
@@ -577,8 +521,7 @@ export async function planGridForRound(opts: {
       }
       return {
         round: tree.treeIndex + 1,
-        // The actual plan used that cycle, not the runner's global caps: the
-        // paper's planner reads "prior planned/effective grids".
+
         plannedBranchCount: entry.plan.branchCount,
         plannedRefineCount: entry.plan.refineCount,
         openedBranches: branches.size,
@@ -632,7 +575,6 @@ export async function planGridForRound(opts: {
   return { plan, source };
 }
 
-/** Clamp an arbitrary policy plan into the context's hard bounds. */
 function normalizePlan(
   raw: GridPlan | null | undefined,
   context: GridPlanningContext

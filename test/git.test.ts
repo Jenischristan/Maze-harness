@@ -40,7 +40,7 @@ describe("git workspace", () => {
     const ws = workspace();
     await ws.init();
     const first = await ws.rootSnapshotRef();
-    // A second workspace over the same repo must not fail on "nothing to commit".
+
     const again = workspace();
     await again.init();
     expect(await again.rootSnapshotRef()).toBe(first);

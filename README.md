@@ -55,9 +55,33 @@ export DREAM_AGENT_MODEL=deepseek-chat
 pnpm dev chat "add a test for the parser and run it"
 ```
 
-Configuration is **flags + environment only** — there is no config file.
-Precedence is flag > env > default. See `docs/cli.md` for every flag and
-`docs/operations.md` for logging, resume, budgets and cleanup.
+Configuration is **flag > environment > `maze.json` > built-in default**.
+`maze.json` (also accepted: `opencode.json`, `.maze.json`, or `$MAZE_CONFIG`)
+declares providers, per-model metadata, per-agent models and permissions, MCP
+servers, and extra instruction globs:
+
+```json
+{
+  "model": "anthropic/claude-sonnet-4",
+  "provider": {
+    "anthropic": { "apiKey": "{env:ANTHROPIC_API_KEY}" }
+  },
+  "agent": {
+    "build": { "model": "deepseek-chat" },
+    "plan": { "mode": "plan" }
+  },
+  "permission": { "bash": "ask", "edit": "allow" },
+  "mcp": { "fs": { "command": ["npx", "-y", "@mcp/fs", "."] } },
+  "instructions": ["docs/*.md"]
+}
+```
+
+`{env:NAME}` and `{file:path}` are expanded at load time, so secrets stay out
+of the file. The context window and pricing come from the built-in model table
+(`src/agent/models.ts`), not from a hand-passed flag. Chat sessions are written
+to the XDG data dir (`~/.local/share/maze/sessions`), not into your project.
+See `docs/cli.md` for every flag and `docs/operations.md` for logging, resume,
+budgets and cleanup.
 
 ## Documentation
 
@@ -231,12 +255,17 @@ src/
   types/                   shared interfaces (env, tools, chat, session)
   util/                    logger, redaction, child env, argv, budgets,
                            retry, schema, integrity, lock, atomic, stream
-  tools/                   read, grep, glob, edit, apply_patch, write, bash,
-                           page, fetch; permissions, truncation, hooks, executor
-  agent/                   loop, OpenAI-compatible provider, verification
-  context/                 compaction, project memory
+  tools/                   read (text/image/PDF), grep (ripgrep), glob, ls,
+                           edit (fuzzy fallback), multiedit, apply_patch, write,
+                           bash, page, todo, question, lsp, webfetch, websearch;
+                           permissions, approval, truncation, hooks, executor
+  agent/                   loop, provider (chat-completions | Anthropic
+                           Messages | Responses, SSE streaming), model table,
+                           prompts + environment block
+  agents/                  discovery agents and agent definitions
+  context/                 compaction (prune, then summarize), hierarchical memory
   session/                 append-only JSONL tree; lifecycle
-  workspace/               git, snapshots, diff
+  workspace/               git, snapshots, diff, workspace materializer
   env/                     LiveEnv + ReplayEnv
   score.ts, tree.ts, evaluator.ts
   policies/                loader, sandbox, variants
@@ -246,6 +275,8 @@ src/
 docs/                      architecture, CLI, policies, operations, security
 prompts/policy-developer.md
 examples/                  toy-task, fast-sum, factor-arena, self-improve
+                           (self-improve materializes its workspace at eval
+                           time via `examples/self-improve/prepare.mjs`)
 test/                      vitest suites + fuzz + CLI end-to-end
 ```
 

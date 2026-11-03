@@ -4,18 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listRuns, readRun } from "../src/runs/report.js";
 
-/**
- * Regression tests for the `report` audit finding.
- *
- * `listRuns` used to filter directory names by `dream-`/`fixed-` prefix, so a
- * run started with an explicit `--run-id e2e` (or any custom id) was silently
- * invisible to `report` even though its `state.json` existed. `readRun` then
- * guessed the mode from the name prefix, which is wrong for the same reason.
- *
- * Runs are now discovered by the presence of `state.json`, and classified by the
- * `mode` they recorded, falling back to the name prefix only for old states.
- */
-
 let tmp = "";
 
 beforeEach(async () => {
@@ -82,7 +70,6 @@ describe("report discovers runs by state, not by name", () => {
   });
 
   it("classifies by the recorded mode, not the id prefix", async () => {
-    // A dream run deliberately named without the `dream-` prefix.
     await writeState("exp-1", { runId: "exp-1", round: 1, mode: "dream", results });
     const run = await readRun(tmp, "exp-1");
     expect(run?.mode).toBe("dream");

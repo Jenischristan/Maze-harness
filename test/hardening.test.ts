@@ -17,13 +17,6 @@ import {
 import { hashLine, scanJsonl, withIntegrity } from "../src/util/integrity.js";
 import { RunLock, LockHeldError } from "../src/util/lock.js";
 
-/**
- * Pins the production-hardening primitives. Each one replaced an unsafe or
- * ad hoc behaviour, so the tests assert the safety property, not the shape:
- * a secret never survives, an argv never splits a quoted path, a child never
- * inherits a key, a budget stops before overshooting, and a lock is exclusive.
- */
-
 describe("redaction", () => {
   it("scrubs bearer headers and provider key shapes", () => {
     expect(redact("Authorization: Bearer abcdefghijklmnop")).toBe(
@@ -229,6 +222,30 @@ describe("JSONL integrity", () => {
     const scan = scanJsonl(`${JSON.stringify(record)}\n`);
     expect(scan.tampered).toHaveLength(1);
     expect(hashLine(record)).not.toBe((record as { __h: string }).__h);
+  });
+
+  it("does not flag a record whose undefined fields are dropped by JSON", () => {
+    // Regression: stableStringify used to emit the bare token "undefined" for
+    // nested undefined values, so any persisted record containing one was
+    // reported as tampered after a JSON round-trip.
+    const record = withIntegrity({
+      id: "m1",
+      optional: undefined,
+      nested: { keep: 1, drop: undefined },
+      list: [1, undefined, 2]
+    });
+    const persisted = JSON.parse(JSON.stringify(record));
+    const scan = scanJsonl(`${JSON.stringify(persisted)}\n`);
+    expect(scan.corrupt).toHaveLength(0);
+    expect(scan.tampered).toHaveLength(0);
+  });
+
+  it("still detects tampering in a record that also has undefined fields", () => {
+    const record = withIntegrity({ id: "m1", keep: 1, drop: undefined });
+    const persisted = JSON.parse(JSON.stringify(record)) as Record<string, unknown>;
+    persisted.keep = 2;
+    const scan = scanJsonl(`${JSON.stringify(persisted)}\n`);
+    expect(scan.tampered).toHaveLength(1);
   });
 });
 

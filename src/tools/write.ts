@@ -43,10 +43,7 @@ export const writeTool: ToolDefinition = {
           error: "write-before-read"
         };
       }
-      // `overwrite: true` alone is not enough: a model mistake that clobbers an
-      // unread file destroys content it never saw. Requiring a prior read (or
-      // the explicit `forceUnread` escape hatch) keeps the read-before-write
-      // invariant meaningful for writes, matching `edit`.
+
       if (exists && !wasRead && !(overwrite && forceUnread)) {
         const prior = await readFile(full, "utf8").catch(() => "");
         return {
@@ -58,8 +55,7 @@ export const writeTool: ToolDefinition = {
         };
       }
       await mkdir(dirname(full), { recursive: true });
-      // Atomic: temp file + fsync + rename, preserving the destination mode, so
-      // a crash mid-write leaves the previous contents intact.
+
       await writeFileAtomic(full, content, "utf8");
       ctx.modifiedFiles.add(full);
       return {

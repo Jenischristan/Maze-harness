@@ -56,7 +56,6 @@ export class ReplayEnv implements ExplorationEnv {
     return this.observations;
   }
 
-  /** Best revealed score, or the baseline when nothing was revealed. */
   get bestSoFar(): number | null {
     let best: number | null = null;
     for (const obs of this.observations.values()) {
@@ -66,15 +65,10 @@ export class ReplayEnv implements ExplorationEnv {
     return best ?? this.baselineScore;
   }
 
-  /** Number of probes spent so far (revealed non-root nodes). */
   get budgetSpent(): number {
     return this.observations.size;
   }
 
-  /**
-   * Reset the observed prefix to just the root. The full recorded tree is
-   * untouched, so replay can start a fresh rollout over the same world.
-   */
   reset(): void {
     this.revealedSet.clear();
     this.observations.clear();
@@ -107,8 +101,6 @@ export class ReplayEnv implements ExplorationEnv {
   }
 
   openedBranches(): number[] {
-    // Match LiveEnv: only branches the policy observed. Returning every branch
-    // leaked future tree structure.
     const out = new Set<number>();
     for (const obs of this.observations.values()) out.add(obs.branch);
     return [...out];
@@ -148,8 +140,7 @@ export class ReplayEnv implements ExplorationEnv {
       if (seenLeaves.has(id)) throw new IllegalBatchError(`duplicate leaf ${id}`);
       seenLeaves.add(id);
     }
-    // An empty batch ends the rollout; check it before any root-availability
-    // rule so the intent is unambiguous.
+
     if (ids.length === 0) return;
     if (this.legalRoots() <= 0) {
       const roots = ids.filter((id) => id === ROOT_ID).length;
@@ -157,9 +148,7 @@ export class ReplayEnv implements ExplorationEnv {
         throw new IllegalBatchError("no unrevealed root children left to open");
       }
     }
-    // An empty tree has no recorded children at all: opening a root can never
-    // reveal anything, so a batch of roots must be rejected exactly like the
-    // "no unrevealed root children" case rather than counted as a no-op round.
+
     if (this.index.nodes.length === 0 && ids.length > 0) {
       throw new IllegalBatchError("tree has no recorded nodes to reveal");
     }
@@ -179,11 +168,7 @@ export class ReplayEnv implements ExplorationEnv {
         continue;
       }
       const child = this.index.latestChild(id);
-      // A legal leaf whose recorded child is already revealed (or which has no
-      // recorded child at all) is a legitimate no-op probe: a live rollout can
-      // end on such a leaf, and replay must follow that trace exactly. The
-      // round is still counted, the batch still recorded. Only an id that is
-      // not a leaf can get here, and `validateBatch` rejects those first.
+
       if (child && !this.revealedSet.has(child.id)) out.push(this.reveal(child));
     }
     this.roundsUsed += 1;
@@ -204,10 +189,7 @@ export class ReplayEnv implements ExplorationEnv {
   private reveal(node: { id: string }): Observation {
     const full = this.index.get(node.id);
     if (!full) throw new IllegalBatchError(`unknown node ${node.id}`);
-    // The root's score is the tree baseline (paper: the root is the initial
-    // workspace, scored once as `baselineScore`). Passing it explicitly keeps a
-    // root child's parent delta measured against the root instead of relying on
-    // `toObservation`'s fallback and a never-assigned `scoreOfRoot`.
+
     const parentScore =
       full.parentId === ROOT_ID
         ? this.baselineScore
@@ -221,7 +203,6 @@ export class ReplayEnv implements ExplorationEnv {
     return obs;
   }
 
-  /** Revealed observations on one branch, excluding the just-revealed cell. */
   private branchObservations(branch: number, excludeId: string): Observation[] {
     const out: Observation[] = [];
     for (const obs of this.observations.values()) {

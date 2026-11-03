@@ -42,8 +42,7 @@ export async function runCli(opts: {
     let timedOut = false;
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
-      // Child processes never inherit provider keys: they get an allowlisted
-      // environment plus only what the caller explicitly opts into.
+
       env: taskChildEnv(process.env, opts.env),
       stdio: ["pipe", "pipe", "pipe"],
       detached: true
@@ -56,16 +55,11 @@ export async function runCli(opts: {
         child.kill("SIGKILL");
       }
     }, opts.timeoutMs);
-    // A command that exits before reading its prompt (e.g. `sh -c "exit 7"`)
-    // closes stdin and `end()` emits EPIPE asynchronously on the stream. That
-    // is an expected race, not a harness failure: the exit code is already
-    // reported through the `close` handler. Swallow EPIPE (and the benign
-    // "write after end" race) so it cannot become an uncaught exception.
+
     child.stdin.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code !== "EPIPE" && err.code !== "ERR_STREAM_DESTROYED") throw err;
     });
-    // StringDecoder-backed: agent output routinely contains non-ASCII text and
-    // a chunk boundary must not corrupt it with U+FFFD.
+
     const outSink = collectText(child.stdout);
     const errSink = collectText(child.stderr);
     child.on("error", (err) => {
@@ -170,8 +164,7 @@ export class CliAgent implements DiscoveryAgent {
     if (this.cfg.transcriptDir) {
       await mkdir(this.cfg.transcriptDir, { recursive: true });
       transcriptPath = join(this.cfg.transcriptDir, `${input.context.nodeId}.log`);
-      // Transcripts are long-lived and may contain a command whose output
-      // echoed a credential; redact before persisting.
+
       await writeFile(
         transcriptPath,
         redact(`# prompt\n${prompt}\n\n# stdout\n${res.stdout}\n\n# stderr\n${res.stderr}\n`),

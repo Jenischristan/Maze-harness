@@ -59,7 +59,7 @@ describe("compaction", () => {
     expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
     expect(result.messages[0]!.synthetic).toBe(true);
     expect(result.messages[0]!.content).toContain("Summary");
-    // Kept tail messages are still present verbatim.
+
     const kept = result.messages.filter((m) => !m.synthetic);
     expect(kept.length).toBeGreaterThan(0);
     expect(kept.at(-1)!.content).toContain("assistant reply 49");
@@ -130,6 +130,24 @@ describe("session store", () => {
     expect(found).toBeDefined();
     expect(found!.name).toBe("demo");
     expect(found!.tokens).toBe(15);
+  });
+
+  it("counts messages and usage for sessions larger than the tail window", async () => {
+    // Regression: listSessions only scanned the last 256 KB, so a long session
+    // dropped its early usage note and under-reported the message count.
+    const store = new SessionStore({ dir, runId: "s5" });
+    await store.init();
+    await store.recordUsage({ promptTokens: 100, completionTokens: 50, totalTokens: 150, usd: 0.01 });
+    for (let i = 0; i < 400; i += 1) {
+      await store.appendMessage({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: "x".repeat(1000)
+      });
+    }
+    const found = (await listSessions(dir)).find((s) => s.runId === "s5");
+    expect(found!.messageCount).toBe(400);
+    expect(found!.tokens).toBe(150);
+    expect(found!.usd).toBeCloseTo(0.01);
   });
 });
 

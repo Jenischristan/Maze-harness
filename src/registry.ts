@@ -3,55 +3,72 @@ import { NETWORK_TOOLS, ToolRegistry } from "./tools/index.js";
 import { subAgentTool } from "./subagents.js";
 import { connectMcpServers, loadMcpConfig, type McpClient } from "./mcp.js";
 import { discoverSkills, type Skill } from "./skills.js";
+import { discoverAgents, type AgentDefinition } from "./agents/definitions.js";
 import type { PermissionPolicy } from "./tools/permissions.js";
+import type { CostTracker } from "./cost.js";
+import type { McpConfigEntry } from "./config.js";
 
-/**
- * Build the tool registry used by every non-Dream agent path (`chat`,
- * `ToolAgent`).
- *
- * Historically each path constructed a bare `ToolRegistry`, so MCP servers,
- * skills, and the `delegate` sub-agent tool were not uniformly available. This
- * helper is the single place that assembles the full registry:
- *
- *   - builtin tools (read/grep/glob/edit/write/bash) — always
- *   - `delegate` sub-agent tool — always
- *   - MCP tools from `.dream/mcp.json` / `.mcp.json` — best effort
- *
- * Skills are not tools; they are prompt sections, so they are returned
- * alongside the registry for the caller to inject via `extraPrompt`.
- *
- * Every optional piece is best-effort: a broken MCP config or skill directory
- * must never prevent an agent from starting.
- */
 export interface AgentToolset {
   registry: ToolRegistry;
   skills: Skill[];
+
+  agents: AgentDefinition[];
   mcpClients: McpClient[];
-  /** Non-fatal problems from MCP/skill discovery, for logging. */
+
   warnings: string[];
-  /** Close any spawned MCP servers. */
+
   close(): void;
 }
 
 export interface AgentToolsetOptions {
-  /** Directory MCP config and skills are discovered from. */
   workspaceDir: string;
   model: string;
   baseUrl: string;
   apiKey: string;
   contextWindow?: number;
-  /** Skip MCP entirely (used by offline/sandboxed callers). */
+
   enableMcp?: boolean;
-  /** Skip the `delegate` tool (sub-agents would recurse otherwise). */
+
   enableDelegate?: boolean;
-  /** Permission policy inherited by delegated sub-agents. */
+
   permissionPolicy?: PermissionPolicy;
-  /** Approval handler inherited by delegated sub-agents. */
+
   approve?: (input: {
     tool: string;
     pattern: string;
     args: Record<string, unknown>;
   }) => Promise<boolean>;
+
+  mcpConfig?: Record<string, McpConfigEntry>;
+
+  sessionsDir?: string;
+
+  cost?: CostTracker;
+}
+
+function serversFromConfig(entries: Record<string, McpConfigEntry>): Array<{
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}> {
+  const out: Array<{
+    name: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+  }> = [];
+  for (const [name, entry] of Object.entries(entries)) {
+    if (name.startsWith("_") || entry.enabled === false) continue;
+
+    if (entry.type === "remote" || (!entry.command && entry.url)) continue;
+    const cmd = entry.command;
+    if (!cmd) continue;
+    const argv = Array.isArray(cmd) ? cmd : [cmd, ...(entry.args ?? [])];
+    if (argv.length === 0) continue;
+    out.push({ name, command: argv[0]!, args: argv.slice(1), env: entry.env });
+  }
+  return out;
 }
 
 export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<AgentToolset> {
@@ -66,9 +83,14 @@ export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<Agen
     warnings.push(`skills: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Network-capable tools are registered but gated by the permission policy
-  // (`networkAllowed`), so an empty allowlist disables them at call time.
   for (const tool of NETWORK_TOOLS) registry.register(tool);
+
+  let agents: AgentDefinition[] = [];
+  try {
+    agents = await discoverAgents(workspaceDir);
+  } catch (err) {
+    warnings.push(`agents: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (opts.enableDelegate !== false) {
     registry.register(
@@ -80,7 +102,10 @@ export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<Agen
         contextWindow: opts.contextWindow,
         registry,
         permissionPolicy: opts.permissionPolicy,
-        approve: opts.approve
+        approve: opts.approve,
+        agents,
+        sessionsDir: opts.sessionsDir,
+        cost: opts.cost
       })
     );
   }
@@ -88,7 +113,10 @@ export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<Agen
   let mcpClients: McpClient[] = [];
   if (opts.enableMcp !== false) {
     try {
-      const servers = await loadMcpConfig(workspaceDir);
+      const fromFile = await loadMcpConfig(workspaceDir);
+      const fromConfig = serversFromConfig(opts.mcpConfig ?? {});
+      const seen = new Set(fromConfig.map((s) => s.name));
+      const servers = [...fromConfig, ...fromFile.filter((s) => !seen.has(s.name))];
       if (servers.length > 0) {
         const result = await connectMcpServers(servers);
         mcpClients = result.clients;
@@ -103,6 +131,7 @@ export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<Agen
   return {
     registry,
     skills,
+    agents,
     mcpClients,
     warnings,
     close(): void {
@@ -112,7 +141,6 @@ export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<Agen
   };
 }
 
-/** Render discovered skills as a compact system-prompt section. */
 export function skillsPrompt(skills: Skill[]): string {
   if (skills.length === 0) return "";
   const lines = ["# Available skills", ""];
@@ -124,4 +152,16 @@ export function skillsPrompt(skills: Skill[]): string {
     "These skills are available but not active. When one matches the task, follow its instructions; the user can also invoke one explicitly with /skill <name>."
   );
   return lines.join("\n");
+}
+
+export function agentsPrompt(agents: AgentDefinition[]): string {
+  const subs = agents.filter((a) => a.mode === "subagent" && a.source !== "builtin");
+  if (subs.length === 0) return "";
+  return [
+    "# Available sub-agents",
+    "",
+    ...subs.map((a) => `- ${a.name}: ${a.description}`),
+    "",
+    "Use the `delegate` tool to hand a self-contained task to one of them."
+  ].join("\n");
 }

@@ -25,17 +25,6 @@ import {
 import type { ExplorationPolicy, GridPlanningContext } from "../src/types.js";
 import { syntheticTree } from "./synthetic.js";
 
-/**
- * Pins the API surface documented in the Dream-RSI paper, Appendix B.2:
- *
- *   question.reset()
- *   question.meta(cell_id) -> CellMeta
- *   question.best_so_far / question.budget_spent   (bookkeeping only)
- *   Observation.n_valid / n_total
- *   pareto.reward = pareto.auc - lambda * parallel_penalty
- *   plan_grid(context) -> GridPlan(branch_count, refine_count, reason)
- */
-
 const W = 3;
 
 function tree(seed: number) {
@@ -92,7 +81,7 @@ describe("exploration env: paper API", () => {
     expect(meta.attempt).toBe(first!.attempt);
     expect(meta.parentId).toBe(first!.parentId);
     expect(meta.seq).toBe(first!.seq);
-    // Structural metadata must not carry a score field at all.
+
     expect(Object.keys(meta)).not.toContain("score");
   });
 
@@ -150,11 +139,6 @@ describe("beta sweep and pareto.reward", () => {
   });
 
   it("the parallel penalty divides by W = maxParallelism, not batch width", () => {
-    // The paper defines the penalty as the mean of
-    // effective_sequential_rounds / total_probes, where a batch of k on the
-    // world's W workers costs ceil(k / W) sequential rounds. Deriving W from
-    // the batch itself makes every full batch look perfectly parallel, so the
-    // same batch must score differently on worlds with different W.
     const report = (maxParallelism: number, batch: string[]) => ({
       treeIndex: 0,
       policyId: "p",
@@ -170,8 +154,7 @@ describe("beta sweep and pareto.reward", () => {
       timedOut: false,
       wallMs: 0
     });
-    // Two probes in one batch: W=4 needs one sequential round (1/2), W=1
-    // needs two (2/2).
+
     const wide = scoreBetaCell(0, [report(4, ["a", "b"])], () => 0);
     const narrow = scoreBetaCell(0, [report(1, ["a", "b"])], () => 0);
     expect(wide.parallelPenalty).toBeCloseTo(1 / 2, 12);
@@ -189,7 +172,7 @@ describe("beta sweep and pareto.reward", () => {
     ]);
     expect(serial.parallelPenalty).toBeCloseTo(1, 12);
     expect(batched.parallelPenalty).toBeCloseTo(1 / 3, 12);
-    // Higher lambda must penalise the serial curve more.
+
     expect(serial.auc - 2 * serial.parallelPenalty).toBeLessThan(
       batched.auc - 2 * batched.parallelPenalty
     );
@@ -210,8 +193,6 @@ describe("beta sweep and pareto.reward", () => {
   });
 
   it("the sandbox hands beta to the policy constructor", async () => {
-    // Two policies with the same source but different beta must produce
-    // different work when the policy routes beta through its schedule.
     const source = await readFile(join(process.cwd(), "src/policies/variants/fixed.ts"), "utf8");
     const compiled = await compilePolicy({
       source,
@@ -433,7 +414,7 @@ describe("branch-level observation signals", () => {
       (o) => o.error === null && o.failClass === "ok"
     );
     expect(successful.length).toBeGreaterThan(0);
-    // A successful evaluation that beats its baseline is an improving probe.
+
     for (const obs of successful) {
       if (obs.deltaVsBaseline !== null) {
         expect(obs.improvedVsBaseline).toBe(obs.deltaVsBaseline > 0);

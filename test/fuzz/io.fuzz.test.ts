@@ -1,8 +1,3 @@
-/**
- * Fuzz + property tests for process/IO boundaries:
- *   src/evaluator.ts, src/tools/hooks.ts, src/util/atomic.ts,
- *   src/workspace/diff.ts, src/mcp.ts (config loading only)
- */
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,10 +35,7 @@ describe("fuzz: evaluator JSON parsing", () => {
         ""
       ];
       const chosen = rng.pick(payloads);
-      // Feed the payload on stdin instead of interpolating it into a shell
-      // string: the old form passed a JSON-quoted *string literal* to
-      // process.stdout.write, so the evaluator saw `"{\"score\":1}"` rather
-      // than the JSON object and never parsed a score.
+
       const payloadPath = join(dir, "payload.txt");
       await writeFile(payloadPath, chosen);
       const ev = new CommandEvaluator({
@@ -138,9 +130,7 @@ describe("fuzz: atomic file writes", () => {
         const modeBefore = (await stat(path)).mode & 0o777;
         await writeFileAtomic(path, "#!/bin/sh\necho hi\n");
         const s = await stat(path);
-        // 0o755 === 493. `writeFile(..., { mode })` is only applied at creation
-        // and umask can strip bits, so assert the writer preserved whatever
-        // mode the destination actually had at rewrite time.
+
         expect(s.mode & 0o777).toBe(modeBefore);
       }
     })

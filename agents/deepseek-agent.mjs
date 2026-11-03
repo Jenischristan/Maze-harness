@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
-// maze-harness discovery agent backed by deepseek-router (OpenAI-compatible).
-// Prompt on stdin. The model calls file/bash tools until it stops calling tools.
+
+
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { exec } from "node:child_process";

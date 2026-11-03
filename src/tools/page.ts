@@ -1,13 +1,6 @@
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { getPage } from "./truncate.js";
 
-/**
- * Redeem a `pageToken` returned by a truncating tool.
- *
- * Truncating tools embed `full output page=<token>` in their output; without
- * this tool that promise was unfulfillable and the model silently worked from
- * truncated text.
- */
 export const pageTool: ToolDefinition = {
   name: "page",
   description:
@@ -34,7 +27,6 @@ export const pageTool: ToolDefinition = {
     }
     const bytes = Buffer.byteLength(full);
     if (bytes > ctx.maxOutputBytes) {
-      // Still return the beginning so the model has something useful.
       return {
         callId: "",
         name: "page",

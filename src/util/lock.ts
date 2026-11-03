@@ -3,24 +3,6 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-/**
- * Cross-process run lock.
- *
- * Two `dream` runs pointed at the same `runs/` directory both wrote
- * `reports/_current` and `tNNNN-*.json` manifests, raced on
- * `policies/build/<id>.ts`, and could interleave git worktree names. Nothing
- * detected it; the last writer simply won and the run's history was a mix of
- * two experiments.
- *
- * `RunLock` is an exclusive, PID-stamped lock file:
- *
- *   - acquire: `O_EXCL` create, so exactly one process wins,
- *   - stale detection: a lock whose PID is gone (or whose host differs but is
- *     older than `maxAgeMs`) is reclaimed with a warning,
- *   - release: removes the file only if this process still owns it,
- *   - `heartbeat`: refreshes mtime so a long run is never considered stale.
- */
-
 export interface LockInfo {
   pid: number;
   host: string;
@@ -29,13 +11,12 @@ export interface LockInfo {
 }
 
 export interface RunLockOptions {
-  /** Lock file path. */
   path: string;
-  /** Identifier recorded in the lock for diagnostics. */
+
   runId: string;
-  /** Treat a lock older than this as stale. Default 6 hours. */
+
   maxAgeMs?: number;
-  /** Called when an existing lock is reclaimed as stale. */
+
   onReclaim?: (info: LockInfo | null, reason: string) => void;
 }
 
@@ -89,7 +70,7 @@ export class RunLock {
     const stale = await this.isStale(existing);
     if (!stale) throw new LockHeldError(existing, this.opts.path);
     this.opts.onReclaim?.(existing, stale);
-    // Reclaim: remove and retry once. A lost race here surfaces as LockHeldError.
+
     await rm(this.opts.path, { force: true });
     try {
       await this.createExclusive(info);
@@ -100,7 +81,6 @@ export class RunLock {
     }
   }
 
-  /** Refresh the lock's mtime so a long-running job is not seen as stale. */
   async heartbeat(): Promise<void> {
     if (!this.held) return;
     const handle = await open(this.opts.path, "r+").catch(() => null);
@@ -117,8 +97,7 @@ export class RunLock {
     if (!this.held) return;
     this.held = false;
     const existing = await this.readExisting();
-    // Only remove the lock if it is still ours; another process may have
-    // reclaimed a lock we were thought to hold.
+
     if (existing && existing.pid !== process.pid) return;
     await rm(this.opts.path, { force: true });
   }
@@ -147,7 +126,6 @@ export class RunLock {
     if (age > this.opts.maxAgeMs) return `lock is ${Math.round(age / 60000)} min old`;
     if (!existing) return "lock file is unreadable";
     if (existing.host !== hostname()) {
-      // A remote host's PID is meaningless here; rely on age only.
       return age > 60 * 60 * 1000 ? "lock is on another host and is over an hour old" : false;
     }
     if (!isPidAlive(existing.pid)) return `pid ${existing.pid} is not running`;
@@ -162,7 +140,7 @@ function isPidAlive(pid: number): boolean {
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    // EPERM means the process exists but we may not signal it.
+
     return code === "EPERM";
   }
 }
@@ -171,12 +149,10 @@ function isExists(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
 }
 
-/** Default lock path for a run root. */
 export function runLockPath(runsDir: string): string {
   return join(runsDir, ".dream.lock");
 }
 
-/** True when a lock file is currently present (diagnostics only). */
 export function lockPresent(runsDir: string): boolean {
   return existsSync(runLockPath(runsDir));
 }

@@ -33,16 +33,13 @@ export interface OfflineConfig {
   sandbox: { timeoutMs: number; memoryMb: number };
   policyWorkDir: string;
   useTrees?: DiscoveryTree[];
-  /** rho grid for selection; defaults to DREAM-RSI's RHO_GRID. */
+
   scoreGrid?: readonly number[];
-  /**
-   * Beta grid for the paper's evaluation-time sweep. `null` disables the
-   * sweep and selects on the rho-grid mean alone.
-   */
+
   betaGrid?: readonly number[] | null;
-  /** Lambda in `pareto.reward = auc - lambda * parallel_penalty`. */
+
   paretoLambda?: number;
-  /** Effective grid plan for this round, handed to replayed policies. */
+
   plan?: { branchCount: number; refineCount: number };
   onEvent?: (event: OfflineEvent) => void;
 }
@@ -59,16 +56,10 @@ export interface OfflineResult {
   records: PolicyVersionRecord[];
   selected: PolicyVersionRecord;
   reportsByPolicy: Map<string, ReplayReport[]>;
-  /** Per-policy beta sweeps, for `beta_sweep.json` and developer feedback. */
+
   sweepsByPolicy: Map<string, BetaSweepResult>;
 }
 
-/**
- * Evaluate one policy at every beta in the sweep and rank the resulting
- * attainment/work/parallelism curve by `pareto.reward` (paper Appendix B.2).
- * Each beta is a fresh sandbox replay set, so a policy that ignores `beta`
- * produces a degenerate (flat) curve.
- */
 async function evaluateBetaSweep(opts: {
   policyId: string;
   bundlePath: string;
@@ -112,8 +103,7 @@ async function evaluateBetaSweep(opts: {
     cells.push(scoreBetaCell(beta, reports, baselineOf));
   }
   const sweep = betaSweepFromCells(cells, opts.lambda);
-  // The baked-in default is the beta whose cell carries the most reward;
-  // ties keep the current policy's own default (the caller decides).
+
   let bestBeta: number | null = null;
   let bestReward = -Infinity;
   for (const cell of sweep.cells) {
@@ -129,7 +119,6 @@ async function evaluateBetaSweep(opts: {
   };
 }
 
-/** Mean V under every budget preference rho, computed from the tree baselines. */
 function gridMean(
   reports: ReplayReport[],
   trees: DiscoveryTree[],
@@ -148,7 +137,7 @@ export async function evaluatePolicyOnTrees(opts: {
   histories: Map<number, TreeSummary[]>;
   scoreConfig: ReplayScoreConfig;
   sandbox: { timeoutMs: number; memoryMb: number };
-  /** Effective grid plan for this round, handed to the policy constructor. */
+
   plan?: { branchCount: number; refineCount: number };
 }): Promise<ReplayReport[]> {
   const reports: ReplayReport[] = [];
@@ -220,7 +209,7 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
         currentPolicySource: previous.record.source,
         replayReports: previous.reports,
         previousFeedback: feedbackLog,
-        // The developer must see the same baseline and objective selection used.
+
         trees: evalTrees,
         scoreConfig: cfg.scoreConfig
       });

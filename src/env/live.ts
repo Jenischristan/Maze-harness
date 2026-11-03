@@ -25,9 +25,9 @@ export interface LiveEnvConfig {
   evaluator: Evaluator;
   workspace: GitWorkspace;
   priorHistory: TreeSummary[];
-  /** Effective grid plan for this rollout (bounds width/depth). */
+
   gridPlan?: import("../types.js").GridPlan;
-  /** Abort signal for the whole rollout (e.g. Ctrl-C in the CLI). */
+
   signal?: AbortSignal;
   onTreeChange?: (tree: DiscoveryTree) => Promise<void> | void;
   onRound?: (tree: DiscoveryTree, batch: string[]) => Promise<void> | void;
@@ -39,15 +39,7 @@ export class LiveEnv implements ExplorationEnv {
   readonly roundsLimit: number;
 
   private readonly cfg: LiveEnvConfig;
-  /**
-   * Index over the nodes recorded so far. `TreeIndex` snapshots the node list
-   * at construction, so this must be rebuilt whenever `nodes` grows. It used to
-   * be built once with `nodes: []` and never refreshed, which made every
-   * refinement look up its parent as missing: the lookup returned undefined, the
-   * "child" was scheduled as a brand-new root branch, attempt stayed 0, and a
-   * live rollout silently produced a flat tree of root children instead of
-   * refinements.
-   */
+
   private index: TreeIndex;
   private readonly observations = new Map<string, Observation>();
   private readonly batches: string[][] = [];
@@ -73,7 +65,6 @@ export class LiveEnv implements ExplorationEnv {
     });
   }
 
-  /** Rebuild the index after the node list changes. */
   private reindex(): void {
     this.index = new TreeIndex(this.index.tree);
   }
@@ -102,7 +93,6 @@ export class LiveEnv implements ExplorationEnv {
     return this.observations;
   }
 
-  /** Best revealed score, or the baseline when nothing was revealed. */
   get bestSoFar(): number | null {
     let best: number | null = null;
     for (const obs of this.observations.values()) {
@@ -112,22 +102,10 @@ export class LiveEnv implements ExplorationEnv {
     return best ?? this.baselineScore;
   }
 
-  /** Number of probes spent so far (revealed non-root nodes). */
   get budgetSpent(): number {
     return this.observations.size;
   }
 
-  /**
-   * Reset the observed prefix to just the root, exactly like ReplayEnv.
-   *
-   * The documented contract (paper Appendix B.2; `prompts/policy-developer.md`)
-   * is "restart the observed prefix at just the root". It must not erase the
-   * recorded discovery tree: in a live rollout the tree is the discovery
-   * output, and clearing `index.nodes` destroyed every node produced so far.
-   * Only the per-rollout view (`observations`, batches, round counter) is
-   * cleared here; `seq`/`nextBranchId` keep increasing so a later probe can
-   * never collide with an already recorded node id.
-   */
   reset(): void {
     this.observations.clear();
     this.batches.length = 0;
@@ -149,9 +127,7 @@ export class LiveEnv implements ExplorationEnv {
 
   legalActions(): string[] {
     if (this.doneFlag) return [];
-    // Same definition as ReplayEnv: a revealed node with no revealed child is
-    // a legal leaf, plus ROOT. The old parent-set walk disagreed with replay,
-    // so a policy could be legal live and illegal on replay.
+
     const revealed = new Set(this.observations.keys());
     const leaves = this.index.leaves(revealed).map((n) => n.id);
     return [ROOT_ID, ...leaves];
@@ -191,16 +167,14 @@ export class LiveEnv implements ExplorationEnv {
       }
       if (seen.has(id)) throw new Error(`duplicate leaf ${id}`);
       seen.add(id);
-      // The effective grid is a hard depth bound: a leaf at the plan's refine
-      // cap may not be refined further (paper: "the runtime grid is the hard
-      // bound"). Without this the plan could be silently exceeded live.
+
       const node = this.index.get(id);
       const refineCap = this.cfg.gridPlan?.refineCount;
       if (node && refineCap !== undefined && node.attempt >= refineCap) {
         throw new Error(`leaf ${id} is at the plan refine cap ${refineCap}`);
       }
     }
-    // Only as many roots as the plan allows may be opened in one batch.
+
     const rootCap = this.cfg.gridPlan?.branchCount;
     if (rootCap !== undefined && rootsRequested > 0) {
       const opened = new Set<number>();
@@ -239,12 +213,9 @@ export class LiveEnv implements ExplorationEnv {
     this.roundsUsed += 1;
     this.batches.push([...ids]);
     for (const node of results) this.index.nodes.push(node);
-    // Nodes were appended to the snapshot's array; refresh the lookup maps so
-    // subsequent `get`/`leaves`/`reserveBranch` calls see them.
+
     this.reindex();
     for (const node of results) {
-      // Same rule as ReplayEnv: a root child's parent is the root, whose score
-      // is the baseline, so live and replay compute identical parent deltas.
       const parentScore =
         node.parentId === ROOT_ID
           ? this.baselineScore
@@ -369,9 +340,7 @@ export class LiveEnv implements ExplorationEnv {
       failClass = message.includes("timed out") ? "timeout" : "agent_error";
       error = message;
     }
-    // Always clean up the worktree, even if committing fails. A leaked
-    // worktree blocks its branch name on the next attempt and eventually
-    // exhausts the repo's worktree list.
+
     let snapshotRef: string;
     try {
       snapshotRef = await this.cfg.workspace.commitWorkspace(
@@ -404,11 +373,6 @@ export class LiveEnv implements ExplorationEnv {
   }
 }
 
-/**
- * Reject as soon as `signal` aborts, even if `promise` never settles. The
- * underlying work cannot always be cancelled (an agent is just a promise), but
- * the rollout stops waiting on it and reports the abort immediately.
- */
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new Error("aborted"));

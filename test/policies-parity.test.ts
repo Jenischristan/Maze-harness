@@ -8,13 +8,6 @@ import { ReplayEnv } from "../src/env/replay.js";
 import { syntheticTree } from "./synthetic.js";
 import type { ExplorationPolicy } from "../src/types.js";
 
-/**
- * The fixed-parallel-refine policy exists twice on purpose: as a typed class the
- * harness runs, and as import-free source text the replay sandbox compiles.
- * These tests pin them to the same behaviour so a fix in one cannot silently
- * leave the other behind — which is exactly how they drifted before.
- */
-
 let tmp = "";
 
 beforeEach(async () => {
@@ -70,8 +63,6 @@ describe("fixed policy: sandbox source matches the typed class", () => {
   });
 
   it("stops instead of spinning when the frontier is stale", async () => {
-    // A tree whose only recorded node is the root: refining a leaf cannot
-    // reveal anything, so the policy must give up rather than burn every round.
     const t = tree(5);
     const rootOnly = {
       ...t,
@@ -80,8 +71,7 @@ describe("fixed policy: sandbox source matches the typed class", () => {
     const env = new ReplayEnv(rootOnly, { maxRounds: 6 });
     const policy = await loadVariant();
     await policy.solve(env);
-    // With no legal leaf the variant opens root branches and stops; it must not
-    // record a batch of non-root ids that reveals nothing.
+
     for (const batch of env.batchesTaken()) {
       expect(batch.length).toBeGreaterThan(0);
       expect(batch.some((id) => id === "root")).toBe(true);
@@ -89,11 +79,6 @@ describe("fixed policy: sandbox source matches the typed class", () => {
   });
 });
 
-/**
- * Guard the other half of the drift: the checked-in scaffold must not spawn
- * example MCP servers, and the persisted project config must not pin an
- * absolute temp path.
- */
 describe("checked-in .dream scaffold", () => {
   it("declares no live MCP servers", async () => {
     const raw = JSON.parse(await readFile(join(process.cwd(), ".dream/mcp.json"), "utf8")) as {
@@ -103,8 +88,6 @@ describe("checked-in .dream scaffold", () => {
   });
 
   it("ships no persisted project config", async () => {
-    // Configuration is flags + environment only. `/init` must not write a
-    // defaults file either, or the two sources would drift.
     const { existsSync } = await import("node:fs");
     expect(existsSync(join(process.cwd(), ".dream/config.json"))).toBe(false);
     const root = await mkdtemp(join(tmpdir(), "dh-init-cfg-"));

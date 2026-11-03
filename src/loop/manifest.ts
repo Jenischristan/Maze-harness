@@ -5,41 +5,30 @@ import { writeFileAtomic } from "../util/atomic.js";
 import { CURRENT_SCHEMA, migrate, registerUpcaster, SchemaVersionError } from "../util/schema.js";
 import type { DiscoveryTree } from "../types.js";
 
-// v1 -> v2: manifests written before the schema field used `version: 1` and no
-// `schema`. Nothing else changed, so the upcaster only has to drop the old key.
 registerUpcaster("live-manifest", 1, (record) => {
   const { version: _legacy, ...rest } = record as { version?: unknown };
   return rest;
 });
 
-/**
- * Per-iteration live-cycle sidecar, mirroring the paper's
- * `trace_pool/iterN/live_cycle_manifest.json` (Appendix B.2). It records what
- * actually happened in one live cycle — planned vs effective grid, real probe
- * work, decision rounds, final best score and the baked-in beta — so the next
- * policy's default beta can be chosen from live evidence instead of replay
- * outcomes.
- */
 export interface LiveCycleManifest {
-  /** Record schema; see `util/schema.ts`. */
   schema: number;
   runId: string;
   round: number;
   treeIndex: number;
   policyId: string;
-  /** Grid plan the runner used for this cycle. */
+
   plannedBranchCount: number;
   plannedRefineCount: number;
   planSource: "policy" | "fallback";
   planReason: string;
-  /** What the tree actually contains. */
+
   effectiveBranchCount: number;
   effectiveRefineCount: number;
   probes: number;
   rounds: number;
   bestScore: number | null;
   baselineScore: number;
-  /** Beta baked into the policy for this cycle, when known. */
+
   beta: number | null;
   createdAt: string;
 }
@@ -57,22 +46,20 @@ export interface DefaultBetaDecision {
   beta: number;
   source: BetaSource;
   reason: string;
-  /** Live manifests the decision was made from (newest last). */
+
   looked: number;
-  /** Sweep points for the most recent archived round, when available. */
+
   sweep: BetaSweepPoint[];
 }
 
-/** The paper's moderately exploratory default when history is thin. */
 export const MODERATE_DEFAULT_BETA = 0.6;
-/** Step size for raising/lowering the default beta (~0.1-0.2). */
+
 export const BETA_STEP = 0.1;
 
 export function manifestPath(dir: string, round: number): string {
   return join(dir, `t${String(round).padStart(4, "0")}-live_cycle_manifest.json`);
 }
 
-/** Persist one live cycle's manifest (and refresh `_current`). */
 export async function saveLiveManifest(dir: string, manifest: LiveCycleManifest): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFileAtomic(
@@ -82,7 +69,6 @@ export async function saveLiveManifest(dir: string, manifest: LiveCycleManifest)
   await writeFileAtomic(join(dir, "_current"), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-/** Read every archived manifest in a directory, sorted by round. */
 export async function loadLiveManifests(dir: string): Promise<LiveCycleManifest[]> {
   if (!existsSync(dir)) return [];
   const files = (await readdir(dir))
@@ -92,19 +78,15 @@ export async function loadLiveManifests(dir: string): Promise<LiveCycleManifest[
   for (const file of files) {
     try {
       const raw = JSON.parse(await readFile(join(dir, file), "utf8")) as Record<string, unknown>;
-      // Files written before the schema field carry no version; `migrate`
-      // treats a missing version as v1 and upgrades it.
+
       out.push(migrate("live-manifest", raw) as unknown as LiveCycleManifest);
     } catch (err) {
-      // A truncated manifest must not break the loop, but a *newer* schema is a
-      // real incompatibility and must be surfaced rather than silently skipped.
       if (err instanceof SchemaVersionError) throw err;
     }
   }
   return out.sort((a, b) => a.round - b.round);
 }
 
-/** Read one archived `beta_sweep.json`, if it exists. */
 export async function loadBetaSweep(
   dir: string,
   round: number,
@@ -137,23 +119,6 @@ export async function loadBetaSweep(
   }
 }
 
-/**
- * The paper's cross-cycle default-beta rule (Appendix B.2 lines 169-188).
- *
- * Read the most recent 2-3 live manifests and the matching archived beta
- * sweeps, then:
- *
- *  - live best still improving: keep the prior default unless its sweep shows
- *    a better nearby beta;
- *  - live best plateaued and a higher beta reaches higher attainment for a
- *    reasonable work/parallelism cost: raise by one small step;
- *  - a high default was already tried through a plateau and high-beta points
- *    add work without higher attainment: lower by one small step;
- *  - insufficient or conflicting history: use the moderate default.
- *
- * `priorBeta` is the beta baked into the policy that is about to be replaced,
- * or null when it is unknown.
- */
 export function chooseDefaultBeta(opts: {
   manifests: ReadonlyArray<LiveCycleManifest>;
   sweep: ReadonlyArray<BetaSweepPoint> | null;
@@ -178,7 +143,6 @@ export function chooseDefaultBeta(opts: {
   const improving = bestLast > bestPrev;
 
   if (improving) {
-    // Keep the prior default unless a nearby sweep cell is clearly better.
     const better = bestNearby(sweep, prior);
     if (better !== null && better.paretoReward > bestAt(sweep, prior) + 1e-12) {
       return {
@@ -198,7 +162,6 @@ export function chooseDefaultBeta(opts: {
     };
   }
 
-  // Plateaued. Does a higher beta buy attainment for a reasonable cost?
   const high = sweep.filter((p) => p.beta > prior + 1e-9);
   const low = sweep.filter((p) => p.beta < prior - 1e-9);
   const priorPoint = bestAt(sweep, prior);
@@ -241,7 +204,7 @@ function bestAt(sweep: ReadonlyArray<BetaSweepPoint>, beta: number): number {
   const exact = sweep.find((p) => Math.abs(p.beta - beta) < 1e-9);
   if (exact) return exact.paretoReward;
   if (sweep.length === 0) return Number.NEGATIVE_INFINITY;
-  // Interpolate-free: use the nearest cell's reward.
+
   return sweep.reduce((best, p) =>
     Math.abs(p.beta - beta) < Math.abs(best.beta - beta) ? p : best
   ).paretoReward;
@@ -261,10 +224,6 @@ function fmt(n: number): string {
   return Number.isFinite(n) ? n.toFixed(4) : "n/a";
 }
 
-/**
- * Build a live manifest from a finished online tree and the grid plan the
- * runner used. Effective width/depth are read from the tree, not the plan.
- */
 export function manifestFromTree(opts: {
   runId: string;
   round: number;

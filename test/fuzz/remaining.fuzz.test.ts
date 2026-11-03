@@ -1,14 +1,3 @@
-/**
- * Direct coverage for the remaining modules that were previously only
- * incidentally imported:
- *   src/tools/limits.ts, src/tools/hookTypes.ts (contract via Hooks),
- *   src/runs/summary.ts, src/cli-version.ts, src/agents/cli.ts,
- *   src/subagents.ts (findSubAgent / subAgentTool), src/tools/fetch.ts.
- *
- * Network is never used: fetch is exercised through its pre-flight
- * validation paths (bad URL, bad protocol, allowlist denial, permission
- * denial), which all return before any socket is opened.
- */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,10 +20,6 @@ import type { PermissionPolicy } from "../../src/tools/permissions.js";
 import type { ToolContext } from "../../src/types.js";
 import { fuzzCases } from "./harness.js";
 
-/* ------------------------------------------------------------------ */
-/* tools/limits                                                        */
-/* ------------------------------------------------------------------ */
-
 describe("tools/limits", () => {
   it("exposes a coherent output budget", () => {
     expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(32 * 1024);
@@ -47,10 +32,6 @@ describe("tools/limits", () => {
     }
   });
 });
-
-/* ------------------------------------------------------------------ */
-/* tools/hookTypes contract via Hooks                                  */
-/* ------------------------------------------------------------------ */
 
 describe("tools/hookTypes contract", () => {
   it("Hooks satisfies HookRegistry and preserves spec fields", async () => {
@@ -92,10 +73,6 @@ describe("tools/hookTypes contract", () => {
   );
 });
 
-/* ------------------------------------------------------------------ */
-/* runs/summary                                                        */
-/* ------------------------------------------------------------------ */
-
 describe("fuzz: runs/summary", () => {
   it(
     "summaryFromTree matches summarizeTree with empty batches",
@@ -122,10 +99,6 @@ describe("fuzz: runs/summary", () => {
   );
 });
 
-/* ------------------------------------------------------------------ */
-/* cli-version                                                         */
-/* ------------------------------------------------------------------ */
-
 describe("cli-version", () => {
   it("resolves the real package version", async () => {
     const v = await versionFromCli();
@@ -138,10 +111,6 @@ describe("cli-version", () => {
     expect(v).toBe(pkg.version);
   });
 });
-
-/* ------------------------------------------------------------------ */
-/* agents/cli                                                          */
-/* ------------------------------------------------------------------ */
 
 describe("fuzz: runCli", () => {
   let dir = "";
@@ -222,10 +191,6 @@ describe("fuzz: runCli", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* subagents                                                           */
-/* ------------------------------------------------------------------ */
-
 describe("fuzz: subagents", () => {
   it(
     "findSubAgent is exact-or-prefix, case-insensitive, and null on empty",
@@ -270,10 +235,6 @@ describe("fuzz: subagents", () => {
   );
 });
 
-/* ------------------------------------------------------------------ */
-/* tools/fetch (no network)                                            */
-/* ------------------------------------------------------------------ */
-
 describe("fuzz: fetch pre-flight validation", () => {
   function ctx(permission: PermissionPolicy): ToolContext {
     return {
@@ -294,8 +255,7 @@ describe("fuzz: fetch pre-flight validation", () => {
 
   it(
     "rejects bad URLs, protocols, and hosts without opening a socket",
-    // Every case must be decided by pre-flight validation. Never include a
-    // URL that could pass the allowlist, or the test would open a socket.
+
     fuzzCases({ seed: 0x1007, runs: 200 }, async (rng) => {
       const invalid = rng.pick(["", "not a url", "example.com", "://", "https://", "http://[bad"]);
       const inputs: Array<[Record<string, unknown>, PermissionPolicy, string]> = [

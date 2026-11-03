@@ -48,7 +48,6 @@ describe("persistent shell state", () => {
     const cd = await run("cd /tmp && pwd", c);
     expect(cd.content.trim()).toBe("/tmp");
 
-    // The next command must start back in the workspace, not in /tmp.
     const pwd = await run("pwd", c);
     expect(pwd.content.trim()).toBe(dir);
   });
@@ -63,7 +62,7 @@ describe("persistent shell state", () => {
 
   it("reports a non-zero exit code as a failed result", async () => {
     const res = await run("exit 3");
-    // `exit` terminates the child, so verify with a command that returns 3.
+
     const alt = await run("sh -c 'exit 3'");
     expect(alt.ok).toBe(false);
     expect(alt.error).toBe("exit 3");
@@ -93,7 +92,7 @@ describe("persistent shell timeouts", () => {
 
     const next = await run("echo FRESH", c);
     expect(next.content.trim()).toBe("FRESH");
-    // No late output may leak into the fresh result.
+
     expect(next.content).not.toContain("LATE");
   }, 20000);
 

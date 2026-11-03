@@ -1,0 +1,257 @@
+import { spawn } from "node:child_process";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+// System tests: run each bundled evaluator exactly the way the harness does
+// (a separate process, one JSON line on stdout, scrubbed cwd) and assert the
+// result contract.
+
+const root = resolve(import.meta.dirname, "..");
+
+let dir = "";
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "dh-eval-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+interface EvaluatorLine {
+  score: number | null;
+  valid: boolean;
+  failClass: string;
+  error: string | null;
+  diagnostics: unknown;
+}
+
+function runEvaluator(
+  script: string,
+  workspace: string
+): Promise<{ code: number | null; last: EvaluatorLine | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn("python3", [join(root, script), workspace], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+    child.on("error", () => resolvePromise({ code: -1, last: null, stdout, stderr }));
+    child.on("close", (code) => {
+      const lines = stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const lastLine = lines.at(-1);
+      let last: EvaluatorLine | null = null;
+      if (lastLine) {
+        try {
+          last = JSON.parse(lastLine) as EvaluatorLine;
+        } catch {
+          last = null;
+        }
+      }
+      resolvePromise({ code, last, stdout, stderr });
+    });
+  });
+}
+
+async function copyInit(task: string, into: string): Promise<string> {
+  await cp(join(root, "examples", task, "init"), into, { recursive: true });
+  return into;
+}
+
+describe("toy-task evaluator", () => {
+  it("scores the shipped init program", async () => {
+    const ws = await copyInit("toy-task", join(dir, "ws"));
+    const res = await runEvaluator("examples/toy-task/evaluator/evaluate.py", ws);
+    expect(res.code).toBe(0);
+    expect(res.last).toMatchObject({ score: 0, valid: true, failClass: "ok", error: null });
+    expect(res.last!.diagnostics).toEqual({ value: 0, generation: 0 });
+  });
+
+  it("scores a positive value and rejects a negative one", async () => {
+    const ws = await copyInit("toy-task", join(dir, "ws2"));
+    await writeFile(join(ws, "program.json"), JSON.stringify({ value: 2.5, generation: 3 }));
+    const good = await runEvaluator("examples/toy-task/evaluator/evaluate.py", ws);
+    expect(good.last).toMatchObject({ score: 2.5, valid: true, failClass: "ok" });
+
+    await writeFile(join(ws, "program.json"), JSON.stringify({ value: -1, generation: 4 }));
+    const bad = await runEvaluator("examples/toy-task/evaluator/evaluate.py", ws);
+    expect(bad.last).toMatchObject({
+      score: null,
+      valid: false,
+      failClass: "incorrect",
+      error: "program value is negative"
+    });
+  });
+
+  it("reports a missing or corrupt program as a compile failure", async () => {
+    const empty = join(dir, "empty");
+    await cp(join(root, "examples", "toy-task", "init"), empty, { recursive: true });
+    await rm(join(empty, "program.json"));
+    const missing = await runEvaluator("examples/toy-task/evaluator/evaluate.py", empty);
+    expect(missing.last).toMatchObject({ score: null, valid: false, failClass: "compile" });
+
+    const ws = await copyInit("toy-task", join(dir, "ws3"));
+    await writeFile(join(ws, "program.json"), "{oops");
+    const corrupt = await runEvaluator("examples/toy-task/evaluator/evaluate.py", ws);
+    expect(corrupt.last).toMatchObject({ score: null, valid: false, failClass: "compile" });
+  });
+});
+
+describe("fast-sum evaluator", () => {
+  it("scores a correct but slow solution as valid", async () => {
+    const ws = await copyInit("fast-sum", join(dir, "fast"));
+    await writeFile(
+      join(ws, "solution.py"),
+      [
+        "def solve(n):",
+        "    return n * (n + 1) // 2",
+        "",
+        "def fib(k):",
+        "    a, b = 0, 1",
+        "    for _ in range(k):",
+        "        a, b = b, a + b",
+        "    return a",
+        "",
+        "def count_primes(limit):",
+        "    if limit < 3:",
+        "        return 0",
+        "    sieve = bytearray([1]) * limit",
+        "    sieve[0:2] = b'\\x00\\x00'",
+        "    for p in range(2, int(limit ** 0.5) + 1):",
+        "        if sieve[p]:",
+        "            sieve[p * p::p] = bytearray(len(sieve[p * p::p]))",
+        "    return sum(sieve)",
+        ""
+      ].join("\n")
+    );
+    const res = await runEvaluator("examples/fast-sum/evaluator/evaluate.py", ws);
+    expect(res.code).toBe(0);
+    expect(res.last!.valid).toBe(true);
+    expect(res.last!.failClass).toBe("ok");
+    expect(res.last!.score).toBeGreaterThan(0);
+    const diag = res.last!.diagnostics as { cases: Array<{ case: string }> };
+    expect(diag.cases.map((c) => c.case)).toEqual(["sum", "fib", "primes"]);
+  });
+
+  it("rejects a wrong answer as incorrect", async () => {
+    const ws = await copyInit("fast-sum", join(dir, "fastbad"));
+    await writeFile(
+      join(ws, "solution.py"),
+      ["def solve(n):", "    return 0", "", "def fib(k):", "    return 0", "", "def count_primes(limit):", "    return 0", ""].join(
+        "\n"
+      )
+    );
+    const res = await runEvaluator("examples/fast-sum/evaluator/evaluate.py", ws);
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "incorrect" });
+  });
+
+  it("reports a missing solution as a compile failure", async () => {
+    const ws = join(dir, "fastempty");
+    await cp(join(root, "examples", "fast-sum", "init"), ws, { recursive: true });
+    await rm(join(ws, "solution.py"));
+    const res = await runEvaluator("examples/fast-sum/evaluator/evaluate.py", ws);
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "compile" });
+  });
+
+  it("reports a crashing solution as a runtime failure", async () => {
+    const ws = await copyInit("fast-sum", join(dir, "fastcrash"));
+    await writeFile(join(ws, "solution.py"), "raise RuntimeError('boom')\n");
+    const res = await runEvaluator("examples/fast-sum/evaluator/evaluate.py", ws);
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "runtime" });
+    // The evaluator prefixes the failing case and forwards the child's stderr,
+    // truncated to 400 characters.
+    expect(res.last!.error).toContain("sum(50000000) crashed");
+    expect(res.last!.error).toContain("Traceback");
+    // "<case> crashed: " prefix + the evaluator's 400-character stderr slice.
+    expect(res.last!.error!.length).toBeLessThanOrEqual(423);
+  });
+});
+
+describe("factor-arena evaluator", () => {
+  it("scores a correct solution and records per-case detail", async () => {
+    const ws = await copyInit("factor-arena", join(dir, "factor"));
+    // A fast, correct implementation so the hard cases finish inside the limits.
+    await writeFile(
+      join(ws, "solution.py"),
+      [
+        "import math",
+        "",
+        "def factorize(n):",
+        "    out = []",
+        "    while n % 2 == 0:",
+        "        out.append(2)",
+        "        n //= 2",
+        "    d = 3",
+        "    while d * d <= n:",
+        "        while n % d == 0:",
+        "            out.append(d)",
+        "            n //= d",
+        "        d += 2",
+        "    if n > 1:",
+        "        out.append(n)",
+        "    return out",
+        "",
+        "def totient(n):",
+        "    if n <= 0:",
+        "        return 0",
+        "    result = n",
+        "    for p in set(factorize(n)):",
+        "        result -= result // p",
+        "    return result",
+        "",
+        "def largest_prime_gap(limit):",
+        "    if limit < 3:",
+        "        return 0",
+        "    sieve = bytearray([1]) * limit",
+        "    sieve[0:2] = b'\\x00\\x00'",
+        "    for p in range(2, math.isqrt(limit - 1) + 1):",
+        "        if sieve[p]:",
+        "            sieve[p * p::p] = bytearray(len(sieve[p * p::p]))",
+        "    primes = [i for i, flag in enumerate(sieve) if flag]",
+        "    return max((b - a for a, b in zip(primes, primes[1:])), default=0)",
+        ""
+      ].join("\n")
+    );
+    const res = await runEvaluator("examples/factor-arena/evaluator/evaluate.py", ws);
+    expect(res.code).toBe(0);
+    expect(res.last!.valid).toBe(true);
+    expect(res.last!.failClass).toBe("ok");
+    expect(res.last!.score).toBeGreaterThan(0);
+    const diag = res.last!.diagnostics as {
+      passed: number;
+      total: number;
+      cases: Array<{ case: string; status: string }>;
+    };
+    expect(diag.total).toBe(9);
+    expect(diag.passed).toBeGreaterThan(0);
+    expect(diag.cases.find((c) => c.case === "factor_small")!.status).toBe("ok");
+  }, 120_000);
+
+  it("fails when no case passes", async () => {
+    const ws = await copyInit("factor-arena", join(dir, "factorbad"));
+    await writeFile(
+      join(ws, "solution.py"),
+      [
+        "def factorize(n):",
+        "    return []",
+        "",
+        "def totient(n):",
+        "    return -1",
+        "",
+        "def largest_prime_gap(limit):",
+        "    return -1",
+        ""
+      ].join("\n")
+    );
+    const res = await runEvaluator("examples/factor-arena/evaluator/evaluate.py", ws);
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "incorrect" });
+  }, 120_000);
+});

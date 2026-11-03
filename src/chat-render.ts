@@ -1,12 +1,51 @@
 import type { AgentEvent } from "./agent/loop.js";
+import type { ChatStreamEvent } from "./types.js";
 
-/** Plain-text event renderer for the non-interactive `chat` command. */
+let streaming = false;
+
+export function printStreamEvent(event: ChatStreamEvent): void {
+  switch (event.type) {
+    case "text":
+      if (!streaming) {
+        process.stdout.write("\n◆ ");
+        streaming = true;
+      }
+      process.stdout.write(event.delta);
+      break;
+    case "reasoning":
+      if (process.env.MAZE_SHOW_REASONING === "1") {
+        process.stderr.write(`\x1b[2m${event.delta}\x1b[0m`);
+      }
+      break;
+    case "tool_start":
+      finishStreamLine();
+      break;
+    case "stop":
+      finishStreamLine();
+      break;
+    default:
+      break;
+  }
+}
+
+export function finishStreamLine(): void {
+  if (streaming) {
+    process.stdout.write("\n");
+    streaming = false;
+  }
+}
+
 export function printEvent(event: AgentEvent): void {
   switch (event.type) {
     case "assistant":
+      if (streaming) {
+        finishStreamLine();
+        break;
+      }
       if (event.content.trim()) process.stdout.write(`\n◆ ${event.content.trim()}\n`);
       break;
     case "tool-start":
+      finishStreamLine();
       for (const call of event.calls) {
         process.stdout.write(`  → ${call.name} ${summarize(call.arguments)}\n`);
       }

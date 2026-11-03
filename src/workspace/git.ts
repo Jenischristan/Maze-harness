@@ -15,8 +15,7 @@ export async function git(args: string[], cwd: string): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", args, {
       cwd,
-      // git hooks and credential helpers run inside the workspace repo, so
-      // they must not see provider keys. PATH/HOME are enough for git itself.
+
       env: taskChildEnv(process.env, {
         GIT_AUTHOR_NAME: "maze-harness",
         GIT_AUTHOR_EMAIL: "harness@localhost",
@@ -26,17 +25,14 @@ export async function git(args: string[], cwd: string): Promise<GitResult> {
       }),
       stdio: ["ignore", "pipe", "pipe"]
     });
-    // Every external call needs a deadline: a hung `git` (network fs, hooks,
-    // credential prompt) previously blocked the run forever. Cap buffered
-    // output too so a runaway command cannot exhaust memory.
+
     const MAX_BYTES = 4 * 1024 * 1024;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, 120_000);
-    // StringDecoder-backed: commit messages, diffs and filenames can carry
-    // non-ASCII text and a chunk boundary must not corrupt it with U+FFFD.
+
     const outSink = collectText(child.stdout, { cap: MAX_BYTES });
     const errSink = collectText(child.stderr, { cap: MAX_BYTES });
     child.on("error", (err) => {
@@ -65,12 +61,6 @@ export async function gitOrThrow(args: string[], cwd: string): Promise<GitResult
   return res;
 }
 
-/**
- * Copy a seed path into the repo working tree. `src` may be a directory (copy
- * its contents recursively) or a single file (copy into the repo root under
- * its own name). Previously the file case was passed straight to `cp(src,
- * repoDir)`, which copied the file *over* the directory path and failed.
- */
 async function seedRepo(src: string | undefined, repoDir: string): Promise<void> {
   if (!src) {
     throw new Error("initProgramDir is not set; cannot bootstrap the workspace");
@@ -83,7 +73,7 @@ async function seedRepo(src: string | undefined, repoDir: string): Promise<void>
     await cp(src, repoDir, { recursive: true, force: true });
     return;
   }
-  // Copy the file into the repo root under its own name.
+
   await cp(src, join(repoDir, basename(src)));
 }
 
@@ -114,17 +104,10 @@ export class GitWorkspace {
   async initRootIfNeeded(): Promise<void> {
     const existing = await git(["rev-parse", "--verify", "root"], this.repoDir);
     if (existing.code === 0) return;
-    // `initProgramPath` points at the initial *program* (a file such as
-    // `examples/toy-task/program.json` or a directory of seeds). Copying a file
-    // onto `repoDir` used to fail with "src argument must be a string" when the
-    // path was undefined and silently created the wrong tree when it was a
-    // file. Handle both shapes explicitly and fail loudly when the seed does
-    // not exist, instead of bootstrapping a repo from nothing.
+
     await seedRepo(this.initProgramDir, this.repoDir);
     await gitOrThrow(["add", "-A"], this.repoDir);
-    // A reused repo may already have the init files committed (identical tree).
-    // There is then nothing to commit and `git commit` exits non-zero, so tag
-    // the current HEAD as root instead of failing the run.
+
     const status = await gitOrThrow(["status", "--porcelain"], this.repoDir);
     if (status.stdout.trim().length > 0) {
       await gitOrThrow(["commit", "-q", "-m", "root: init program"], this.repoDir);
@@ -149,7 +132,7 @@ export class GitWorkspace {
     const dir = join(this.worktreesDir, name);
     await rm(dir, { recursive: true, force: true });
     const ref = snapshotRef && snapshotRef !== "root" ? snapshotRef : "root";
-    // A crashed run can leave the name registered; prune before re-adding.
+
     await git(["worktree", "prune"], this.repoDir);
     const res = await git(["worktree", "add", "--detach", dir, ref], this.repoDir);
     if (res.code !== 0) {
@@ -169,7 +152,6 @@ export class GitWorkspace {
     return head.stdout.trim();
   }
 
-  /** Remove every registered worktree (used on abort / cleanup). */
   async pruneWorktrees(): Promise<void> {
     const list = await git(["worktree", "list", "--porcelain"], this.repoDir);
     if (list.code !== 0) return;

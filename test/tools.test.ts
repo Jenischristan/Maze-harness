@@ -6,14 +6,18 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ToolExecutor,
   ToolRegistry,
+  applyPatchTool,
   editTool,
+  multieditTool,
   readTool,
   writeTool,
   grepTool,
   globTool,
   bashTool,
+  lspTool,
   resetShells
 } from "../src/tools/index.js";
+import { parseTscOutput } from "../src/tools/lsp.js";
 import { Hooks } from "../src/tools/hooks.js";
 import {
   decide,
@@ -181,6 +185,205 @@ describe("edit tool", () => {
     expect(res.ok).toBe(false);
     expect(res.error).toBe("overlapping-edits");
   });
+
+  it("replaces the whole fuzzy match, not just a prefix of it", async () => {
+    // Regression: the indentation strategy matched lines with leading
+    // whitespace stripped but returned a span computed from a stale offset,
+    // so only a prefix of the intended block was replaced.
+    const c = await setup("class A {\n    function f() {\n        return 1;\n    }\n}\n");
+    const res = await editTool.execute(
+      {
+        path: "f.ts",
+        edits: [
+          {
+            oldText: "function f() {\n  return 1;\n}",
+            newText: "function f() {\n  return 2;\n}"
+          }
+        ]
+      },
+      c
+    );
+    expect(res.ok, res.content).toBe(true);
+    expect(await readFile(join(dir, "f.ts"), "utf8")).toBe(
+      "class A {\n    function f() {\n  return 2;\n}\n}\n"
+    );
+  });
+
+  it("replaces a line-trimmed match including the real whitespace", async () => {
+    // Regression: line-trimmed offsets were derived from the trimmed lines,
+    // so the returned span was too short and left trailing spaces behind.
+    const c = await setup("line one   \nline two\n");
+    const res = await editTool.execute(
+      {
+        path: "f.ts",
+        edits: [{ oldText: "line one\nline two", newText: "replaced" }]
+      },
+      c
+    );
+    expect(res.ok, res.content).toBe(true);
+    expect(await readFile(join(dir, "f.ts"), "utf8")).toBe("replaced\n");
+  });
+
+  it("dryRun computes the result without writing to disk", async () => {
+    // Regression: edit ignored dryRun and wrote immediately, which made
+    // multiedit mutate earlier files before validating the rest.
+    const c = await setup("hello\n");
+    const res = await editTool.execute(
+      { path: "f.ts", edits: [{ oldText: "hello", newText: "bye" }], dryRun: true },
+      c
+    );
+    expect(res.ok).toBe(true);
+    expect((res.data as { next: string }).next).toBe("bye\n");
+    expect(await readFile(join(dir, "f.ts"), "utf8")).toBe("hello\n");
+    expect(c.modifiedFiles.size).toBe(0);
+  });
+});
+
+describe("multiedit tool", () => {
+  async function twoFiles(): Promise<ToolContext> {
+    await writeFile(join(dir, "a.txt"), "AAA\n");
+    await writeFile(join(dir, "b.txt"), "BBB\n");
+    const c = ctx();
+    await readTool.execute({ path: "a.txt" }, c);
+    await readTool.execute({ path: "b.txt" }, c);
+    return c;
+  }
+
+  it("is atomic: a failing edit leaves every file untouched", async () => {
+    const c = await twoFiles();
+    const res = await multieditTool.execute(
+      {
+        files: [
+          { path: "a.txt", edits: [{ oldText: "AAA", newText: "XXX" }] },
+          { path: "b.txt", edits: [{ oldText: "NOPE", newText: "YYY" }] }
+        ]
+      },
+      c
+    );
+    expect(res.ok).toBe(false);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("AAA\n");
+    expect(await readFile(join(dir, "b.txt"), "utf8")).toBe("BBB\n");
+  });
+
+  it("applies edits to every file on the success path", async () => {
+    const c = await twoFiles();
+    const res = await multieditTool.execute(
+      {
+        files: [
+          { path: "a.txt", edits: [{ oldText: "AAA", newText: "one" }] },
+          { path: "b.txt", edits: [{ oldText: "BBB", newText: "two" }] }
+        ]
+      },
+      c
+    );
+    expect(res.ok, res.content).toBe(true);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("one\n");
+    expect(await readFile(join(dir, "b.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("rejects the same file listed twice under different paths", async () => {
+    const c = await twoFiles();
+    const res = await multieditTool.execute(
+      {
+        files: [
+          { path: "a.txt", edits: [{ oldText: "AAA", newText: "one" }] },
+          { path: "./a.txt", edits: [{ oldText: "AAA", newText: "two" }] }
+        ]
+      },
+      c
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("multiedit-duplicate");
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("AAA\n");
+  });
+});
+
+describe("apply_patch tool", () => {
+  async function setup(files: Record<string, string>): Promise<ToolContext> {
+    const c = ctx();
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(join(dir, name), content);
+      await readTool.execute({ path: name }, c);
+    }
+    return c;
+  }
+
+  it("updates a file through an @@ hunk", async () => {
+    const c = await setup({ "f.txt": "keep\nold line\ntail\n" });
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: f.txt",
+      "@@",
+      "old line",
+      "***NEW***",
+      "new line",
+      "*** End Patch"
+    ].join("\n");
+    const res = await applyPatchTool.execute({ patch }, c);
+    expect(res.ok, res.content).toBe(true);
+    expect(await readFile(join(dir, "f.txt"), "utf8")).toBe("keep\nnew line\ntail\n");
+  });
+
+  it("deletes a file instead of truncating it", async () => {
+    // Regression: Delete File wrote an empty file and left it on disk.
+    const c = await setup({ "gone.txt": "bye\n" });
+    const patch = ["*** Begin Patch", "*** Delete File: gone.txt", "*** End Patch"].join("\n");
+    const res = await applyPatchTool.execute({ patch }, c);
+    expect(res.ok, res.content).toBe(true);
+    await expect(readFile(join(dir, "gone.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("creates a file that did not exist", async () => {
+    const c = ctx();
+    const patch = [
+      "*** Begin Patch",
+      "*** Add File: new.txt",
+      "first line",
+      "second line",
+      "*** End Patch"
+    ].join("\n");
+    const res = await applyPatchTool.execute({ patch }, c);
+    expect(res.ok, res.content).toBe(true);
+    expect(await readFile(join(dir, "new.txt"), "utf8")).toBe("first line\nsecond line");
+  });
+
+  it("leaves every file untouched when one hunk is invalid", async () => {
+    const c = await setup({ "a.txt": "AAA\n", "b.txt": "BBB\n" });
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: a.txt",
+      "@@",
+      "AAA",
+      "***NEW***",
+      "changed",
+      "*** Update File: b.txt",
+      "@@",
+      "NOPE",
+      "***NEW***",
+      "x",
+      "*** End Patch"
+    ].join("\n");
+    const res = await applyPatchTool.execute({ patch }, c);
+    expect(res.ok).toBe(false);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("AAA\n");
+    expect(await readFile(join(dir, "b.txt"), "utf8")).toBe("BBB\n");
+  });
+
+  it("refuses to patch a file that was never read", async () => {
+    await writeFile(join(dir, "unread.txt"), "x\n");
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: unread.txt",
+      "@@",
+      "x",
+      "***NEW***",
+      "y",
+      "*** End Patch"
+    ].join("\n");
+    const res = await applyPatchTool.execute({ patch }, ctx());
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("patch-before-read");
+  });
 });
 
 describe("search tools", () => {
@@ -223,9 +426,6 @@ describe("bash tool", () => {
   });
 
   it("persists state across calls in the same session", async () => {
-    // Use a dedicated workspace: `afterEach` calls resetShells(), which kills
-    // the shell asynchronously, and a previous test's dying shell can otherwise
-    // still be draining its pipe when the next session starts.
     resetShells();
     const ws = await mkdtemp(join(tmpdir(), "dh-shell-"));
     const c = ctx({ workspaceDir: ws });
@@ -279,6 +479,53 @@ describe("permissions", () => {
     const d = await decide(policy, "bash", { command: "curl example.com" });
     expect(d.action).toBe("deny");
     expect(seen).toEqual(["curl example.com"]);
+  });
+});
+
+describe("lsp diagnostics", () => {
+  it("parses tsc output and strips the workspace prefix", () => {
+    const out = [
+      "/proj/bad.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.",
+      "src/ok.ts(2,3): warning TS9999: demo warning"
+    ].join("\n");
+    expect(parseTscOutput(out, "/proj")).toEqual([
+      {
+        file: "bad.ts",
+        line: 1,
+        column: 7,
+        severity: "error",
+        code: "TS2322",
+        message: "Type 'string' is not assignable to type 'number'."
+      },
+      {
+        file: "src/ok.ts",
+        line: 2,
+        column: 3,
+        severity: "warning",
+        code: "TS9999",
+        message: "demo warning"
+      }
+    ]);
+  });
+
+  it("does not attribute other files' diagnostics to the requested path", () => {
+    // Regression: the filter used `output.includes(path)`, so requesting
+    // `b.ts` also matched `ab.ts` and `src/sub/b.ts`.
+    const out = "ab.ts(1,1): error TS1: boom.\nsrc/sub/b.ts(2,2): error TS2: other.\n";
+    const want = "b.ts";
+    const matched = parseTscOutput(out, "/proj").filter(
+      (d) => d.file.split("\\").join("/").replace(/^\.\//, "") === want
+    );
+    expect(matched).toEqual([]);
+  });
+
+  it("runs without crashing in an ES module package", async () => {
+    // Regression: the runner used `require("node:child_process")` inside an
+    // ESM module and threw ERR_AMBIGUOUS_MODULE_SYNTAX on every call.
+    await writeFile(join(dir, "notes.md"), "hello\n");
+    const res = await lspTool.execute({ path: "notes.md" }, ctx());
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain("no checker configured");
   });
 });
 

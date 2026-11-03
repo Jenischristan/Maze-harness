@@ -70,11 +70,10 @@ describe("live reset keeps the recorded tree", () => {
     expect(env.observed().size).toBe(0);
     expect(env.rounds).toBe(0);
     expect(env.legalActions()).toEqual([ROOT_ID]);
-    // The discovery output survives a prefix reset.
+
     expect(env.currentTree().nodes).toHaveLength(1);
     expect(env.currentTree().nodes[0]!.id).toBe(a!.id);
 
-    // A new probe after reset appends and never collides with the old id.
     const [b] = await env.probeBatch([ROOT_ID]);
     expect(b).toBeDefined();
     expect(b!.id).not.toBe(a!.id);

@@ -1,17 +1,3 @@
-/**
- * Structured logging with levels and a stable, greppable line format.
- *
- * Every long-running subsystem used to write to stderr ad hoc, which made
- * correlating a failure across run → round → turn → tool call impossible. All
- * diagnostics now go through one logger that:
- *
- *   - writes one line per record (`<ts> <level> <scope> <message> k=v ...`),
- *   - can emit newline-delimited JSON (`DREAM_LOG_FORMAT=json`),
- *   - carries a correlation context (run/round/turn/tool ids),
- *   - redacts secrets before serialising (see `redact.ts`).
- *
- * Logs go to stderr so stdout stays machine-parseable for `--json` commands.
- */
 import { redactValue } from "./redact.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -42,7 +28,6 @@ const state: LoggerState = {
   context: {}
 };
 
-/** Configure the process-wide logger. Later calls replace earlier settings. */
 export function configureLogging(opts: {
   level?: LogLevel | string;
   format?: "text" | "json" | string;
@@ -51,12 +36,10 @@ export function configureLogging(opts: {
   if (opts.format !== undefined) state.format = opts.format === "json" ? "json" : "text";
 }
 
-/** Configure from environment: DREAM_LOG_LEVEL and DREAM_LOG_FORMAT. */
 export function configureLoggingFromEnv(env: NodeJS.ProcessEnv = process.env): void {
   configureLogging({ level: env.DREAM_LOG_LEVEL, format: env.DREAM_LOG_FORMAT });
 }
 
-/** Add a sink (tests, in-process collectors). Defaults to stderr when empty. */
 export function addLogSink(sink: LogSink): () => void {
   state.sinks.push(sink);
   return () => {
@@ -69,10 +52,6 @@ export function currentLogLevel(): LogLevel {
   return state.level;
 }
 
-/**
- * Run `fn` with extra correlation fields on every record. Nested contexts
- * merge; a child cannot drop an inherited field by setting it to undefined.
- */
 export async function withLogContext<T>(
   context: Record<string, unknown>,
   fn: () => Promise<T> | T
@@ -89,7 +68,7 @@ export async function withLogContext<T>(
 function parseLevel(raw: string | undefined): LogLevel {
   const value = (raw ?? "info").toLowerCase();
   if (value in LEVELS) return value as LogLevel;
-  // Never let a typo silently silence diagnostics: unknown values stay at info.
+
   return "info";
 }
 
@@ -145,7 +124,6 @@ export interface Logger {
   child(fields: Record<string, unknown>): Logger;
 }
 
-/** Create a logger bound to one scope (e.g. "loop.online", "tool.bash"). */
 export function getLogger(scope: string, base: Record<string, unknown> = {}): Logger {
   return {
     debug: (message, fields) => emit("debug", scope, message, { ...base, ...fields }),

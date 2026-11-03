@@ -123,8 +123,7 @@ describe("policy sandbox hardening", () => {
       AWS_SECRET_ACCESS_KEY: "secret"
     });
     expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/x" });
-    // Only keys present in the source are forwarded; the allowlist bounds what
-    // may pass, it does not invent missing variables.
+
     for (const key of Object.keys(env)) {
       expect(SANDBOX_ENV_ALLOWLIST as readonly string[]).toContain(key);
     }
@@ -167,8 +166,8 @@ describe("policy sandbox hardening", () => {
     const pollution = `
       export default class Pollution {
         async solve(env) {
-          // With --disable-proto=throw, this assignment throws instead of
-          // silently mutating the prototype chain.
+
+
           ({}).__proto__ = { polluted: true };
           await env.probeBatch([]);
         }

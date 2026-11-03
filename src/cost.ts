@@ -1,38 +1,18 @@
 import type { Usage } from "./types.js";
-
-interface PricePerMillion {
-  input: number;
-  output: number;
-}
-
-const PRICES: Record<string, PricePerMillion> = {
-  "deepseek-chat": { input: 0.27, output: 1.1 },
-  "deepseek-reasoner": { input: 0.55, output: 2.19 },
-  "gpt-4o": { input: 2.5, output: 10 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
-  "claude-3-5-sonnet": { input: 3, output: 15 },
-  "claude-3-5-haiku": { input: 0.8, output: 4 },
-  local: { input: 0, output: 0 }
-};
-
-function priceFor(model: string): PricePerMillion {
-  const direct = PRICES[model];
-  if (direct) return direct;
-  const key = Object.keys(PRICES).find((k) => model.includes(k));
-  return key ? (PRICES[key] as PricePerMillion) : { input: 0, output: 0 };
-}
+import { modelInfo, priceUsage } from "./agent/models.js";
 
 export function usdFor(model: string, usage: Usage): number {
-  const price = priceFor(model);
-  return (
-    (usage.promptTokens / 1_000_000) * price.input +
-    (usage.completionTokens / 1_000_000) * price.output
-  );
+  const info = modelInfo(model);
+  return priceUsage(info, {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    cacheReadTokens: usage.cacheReadTokens
+  });
 }
 
 export interface CostTrackerOptions {
   model: string;
-  /** Route exploration to a cheaper model (recorded, not enforced here). */
+
   explorationModel?: string;
 }
 
@@ -41,6 +21,8 @@ export class CostTracker {
   readonly explorationModel?: string;
   private promptTokens = 0;
   private completionTokens = 0;
+  private cacheReadTokens = 0;
+  private reasoningTokens = 0;
   private usd = 0;
   private calls = 0;
 
@@ -53,15 +35,29 @@ export class CostTracker {
     const usd = usage.usd ?? usdFor(model, usage);
     this.promptTokens += usage.promptTokens;
     this.completionTokens += usage.completionTokens;
+    this.cacheReadTokens += usage.cacheReadTokens ?? 0;
+    this.reasoningTokens += usage.reasoningTokens ?? 0;
     this.usd += usd;
     this.calls += 1;
     return { ...usage, usd };
+  }
+
+  merge(other: CostTracker): void {
+    const s = other.summary();
+    this.promptTokens += s.promptTokens;
+    this.completionTokens += s.completionTokens;
+    this.cacheReadTokens += s.cacheReadTokens;
+    this.reasoningTokens += s.reasoningTokens;
+    this.usd += s.usd;
+    this.calls += s.calls;
   }
 
   summary(): {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cacheReadTokens: number;
+    reasoningTokens: number;
     usd: number;
     calls: number;
   } {
@@ -69,6 +65,8 @@ export class CostTracker {
       promptTokens: this.promptTokens,
       completionTokens: this.completionTokens,
       totalTokens: this.promptTokens + this.completionTokens,
+      cacheReadTokens: this.cacheReadTokens,
+      reasoningTokens: this.reasoningTokens,
       usd: this.usd,
       calls: this.calls
     };

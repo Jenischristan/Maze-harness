@@ -1,17 +1,3 @@
-/**
- * Split a command line into argv without a shell.
- *
- * Several call sites used `raw.split(" ")`, which breaks on any path with a
- * space (`/opt/my tools/python`), collapses nothing, and leaves quotes in the
- * argv entry. `--evaluator 'python3 "/a b/eval.py" {workspace}'` produced
- * `["python3", "\"/a", "b/eval.py\"", "{workspace}"]`.
- *
- * This parser understands single and double quotes, backslash escapes inside
- * double quotes, and runs of whitespace. It does **not** expand variables,
- * globs, pipes or redirection: commands are executed without a shell (see
- * `argvJoin` for the reverse direction), which is both safer and predictable.
- * A caller that wants a shell can pass an explicit `sh -c` argv.
- */
 export class CommandParseError extends Error {}
 
 export function parseCommandLine(input: string): string[] {
@@ -49,7 +35,7 @@ export function parseCommandLine(input: string): string[] {
         started = true;
         continue;
       }
-      // A trailing backslash is a literal backslash.
+
       current += ch;
       started = true;
       continue;
@@ -72,23 +58,16 @@ export function parseCommandLine(input: string): string[] {
   return out;
 }
 
-/** Quote one argv entry so `parseCommandLine` round-trips it. */
 export function quoteArg(arg: string): string {
   if (arg.length === 0) return '""';
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
   return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-/** Render argv back to a display/CLI string. */
 export function argvJoin(argv: readonly string[]): string {
   return argv.map(quoteArg).join(" ");
 }
 
-/**
- * Parse a command that may be either a JSON array (`["python3","eval.py"]`)
- * or a shell-like string. JSON arrays are unambiguous and preferred when a
- * command path can contain spaces.
- */
 export function parseCommandSpec(input: string): string[] {
   const trimmed = input.trim();
   if (trimmed.startsWith("[")) {

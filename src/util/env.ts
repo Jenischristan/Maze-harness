@@ -1,18 +1,3 @@
-/**
- * Environment scrubbing for every child process the harness spawns.
- *
- * Untrusted surfaces (an MCP server declared by a cloned repository, a
- * discovery/policy agent CLI, an evaluator, a verification hook) were all
- * spawned with `{ ...process.env }`, so a hostile workspace could read the
- * provider API key straight out of its environment. Child processes now get an
- * allowlisted environment plus whatever the caller explicitly adds.
- *
- * This is *defence in depth*, not a security boundary: anything running with
- * the same uid can still read other state. It removes the accidental leak of
- * credentials into subprocesses, which is the realistic failure mode.
- */
-
-/** Variables a child may inherit. Anything else is dropped. */
 export const CHILD_ENV_ALLOWLIST = [
   "PATH",
   "HOME",
@@ -31,11 +16,6 @@ export const CHILD_ENV_ALLOWLIST = [
   "PATHEXT"
 ] as const;
 
-/**
- * Prefixes that are always dropped, even if they look like an allowlisted key.
- * These are the variables that commonly carry credentials or inject code into
- * child interpreters.
- */
 const CHILD_ENV_DENY_PREFIXES = [
   "DREAM_",
   "OPENAI_",
@@ -58,7 +38,6 @@ const CHILD_ENV_DENY_PREFIXES = [
   "ENV"
 ] as const;
 
-/** True when a variable must never reach a child process. */
 export function isDeniedEnvKey(key: string): boolean {
   const upper = key.toUpperCase();
   for (const prefix of CHILD_ENV_DENY_PREFIXES) {
@@ -67,13 +46,6 @@ export function isDeniedEnvKey(key: string): boolean {
   return false;
 }
 
-/**
- * Build a scrubbed environment.
- *
- * @param source      environment to read (default: `process.env`)
- * @param extra       explicit additions/overrides the caller needs
- * @param allowKeys   additional keys to inherit even if not allowlisted
- */
 export function childEnv(
   source: NodeJS.ProcessEnv = process.env,
   extra: Record<string, string | undefined> = {},
@@ -92,11 +64,6 @@ export function childEnv(
   return env;
 }
 
-/**
- * Environment a discovery agent, evaluator or hook should see: the child
- * allowlist plus a workspace marker. Provider credentials are deliberately not
- * included; tools that need a provider get it through the harness, not env.
- */
 export function taskChildEnv(
   source: NodeJS.ProcessEnv = process.env,
   extra: Record<string, string | undefined> = {}

@@ -1,14 +1,20 @@
 import type { HookResult, HookRegistry } from "./hookTypes.js";
 import type { PermissionPolicy } from "./permissions.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../types.js";
-import { bashTool } from "./bash.js";
-import { editTool } from "./edit.js";
-import { fetchTool } from "./fetch.js";
-import { pageTool } from "./page.js";
-import { applyPatchTool } from "./patch.js";
 import { readTool } from "./read.js";
-import { globTool, grepTool } from "./search.js";
+import { grepTool, globTool, lsTool } from "./search.js";
+import { editTool } from "./edit.js";
 import { writeTool } from "./write.js";
+import { applyPatchTool } from "./patch.js";
+import { bashTool } from "./bash.js";
+import { pageTool } from "./page.js";
+import { todoTool } from "./todo.js";
+import { questionTool } from "./question.js";
+import { lspTool } from "./lsp.js";
+import { fetchTool } from "./fetch.js";
+import { webfetchTool, websearchTool } from "./web.js";
+import { multieditTool } from "./multiedit.js";
+import { isReadOnlyTool } from "./kinds.js";
 import { DEFAULT_MAX_OUTPUT_BYTES } from "./limits.js";
 
 export * from "./permissions.js";
@@ -16,29 +22,50 @@ export * from "./truncate.js";
 export * from "./limits.js";
 export * from "./hookTypes.js";
 export { resetShells } from "./bash.js";
-export { readTool, writeTool, editTool, applyPatchTool, bashTool, globTool, grepTool };
+export { setQuestionHandler, ttyQuestionHandler } from "./question.js";
+export { readTodos, renderTodos } from "./todo.js";
+export { isReadOnlyTool } from "./kinds.js";
+export {
+  readTool,
+  writeTool,
+  editTool,
+  applyPatchTool,
+  bashTool,
+  globTool,
+  grepTool,
+  lsTool,
+  multieditTool,
+  todoTool,
+  questionTool,
+  lspTool,
+  webfetchTool,
+  websearchTool
+};
 
 const BUILTIN_TOOLS: ToolDefinition[] = [
   readTool,
   grepTool,
   globTool,
+  lsTool,
   editTool,
+  multieditTool,
   applyPatchTool,
   writeTool,
   bashTool,
-  pageTool
+  pageTool,
+  todoTool,
+  questionTool,
+  lspTool
 ];
 
-/** Tools that reach the network; registered only where a policy allows it. */
-export const NETWORK_TOOLS: ToolDefinition[] = [fetchTool];
+export const NETWORK_TOOLS: ToolDefinition[] = [fetchTool, webfetchTool, websearchTool];
 
-/** Every tool that may be registered, including network tools. */
-const ALL_TOOLS: ToolDefinition[] = [...BUILTIN_TOOLS, ...NETWORK_TOOLS];
+export const ALL_TOOLS: ToolDefinition[] = [...BUILTIN_TOOLS, ...NETWORK_TOOLS];
 
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
 
-  constructor(tools: ToolDefinition[] = BUILTIN_TOOLS) {
+  constructor(tools: ToolDefinition[] = ALL_TOOLS) {
     for (const t of tools) this.tools.set(t.name, t);
   }
 
@@ -46,7 +73,6 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
-  /** Add or replace a tool (used for MCP servers and plugins). */
   register(tool: ToolDefinition): void {
     this.tools.set(tool.name, tool);
   }
@@ -55,7 +81,6 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
-  /** Tool definitions formatted for a model request. */
   schema(): Array<{
     type: "function";
     function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -67,16 +92,16 @@ export class ToolRegistry {
   }
 }
 
-const READ_ONLY = new Set(["read", "grep", "glob", "page", "fetch"]);
-
 export interface ExecutorOptions {
   registry: ToolRegistry;
   workspaceDir: string;
   permission: PermissionPolicy;
   hooks: HookRegistry;
   maxOutputBytes?: number;
-  /** Max repeated identical calls before loop detection trips. */
+
   loopThreshold?: number;
+
+  mediaTypes?: string[];
 }
 
 export interface ExecutedBatch {
@@ -85,30 +110,19 @@ export interface ExecutedBatch {
   loopDetected: boolean;
 }
 
-/**
- * Executes tool calls. Independent read-only calls run in parallel; mutating
- * calls run sequentially so edit order is deterministic. After any mutating
- * call (edit/write/bash), verification hooks run once and their output is
- * attached to the batch.
- */
 export class ToolExecutor {
   readonly readFiles = new Set<string>();
   readonly readHashes = new Map<string, string>();
   readonly modifiedFiles = new Set<string>();
   private readonly opts: ExecutorOptions;
   private readonly seen = new Map<string, number>();
-  /** Abort signal for the current turn, forwarded to every tool. */
+
   private signal: AbortSignal | undefined;
 
   constructor(opts: ExecutorOptions) {
     this.opts = opts;
   }
 
-  /**
-   * Bind the turn's abort signal. Ctrl-C in the CLI aborts the controller; tools
-   * receive the same signal through `ToolContext.signal` and kill their
-   * subprocesses, so a 120s bash command does not have to run to completion.
-   */
   setSignal(signal: AbortSignal | undefined): void {
     this.signal = signal;
   }
@@ -122,7 +136,8 @@ export class ToolExecutor {
       maxOutputBytes: this.opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       permission: this.opts.permission,
       hooks: this.opts.hooks,
-      signal: this.signal
+      signal: this.signal,
+      mediaTypes: this.opts.mediaTypes
     };
   }
 
@@ -152,7 +167,7 @@ export class ToolExecutor {
       const key = `${call.name}:${stableStringify(call.arguments)}`;
       const count = (this.seen.get(key) ?? 0) + 1;
       this.seen.set(key, count);
-      if (count > (this.opts.loopThreshold ?? 4) && !READ_ONLY.has(call.name)) {
+      if (count > (this.opts.loopThreshold ?? 4) && !isReadOnlyTool(call.name)) {
         results[i] = {
           callId: call.id,
           name: call.name,
@@ -163,7 +178,7 @@ export class ToolExecutor {
         loopDetected = true;
         continue;
       }
-      if (READ_ONLY.has(call.name)) parallelIdx.push(i);
+      if (isReadOnlyTool(call.name)) parallelIdx.push(i);
       else serialIdx.push(i);
     }
     const parallel = await Promise.all(
@@ -227,16 +242,6 @@ export class ToolExecutor {
   }
 }
 
-/**
- * Minimal structural validation against a tool's JSON Schema.
- *
- * The model's argument object was previously trusted blindly: a parse failure
- * became `{ __parseError: raw }` and the tool ran anyway (e.g. bash reported
- * "empty command"). Validate the required properties and their primitive
- * types, and reject stray keys when the schema says `additionalProperties:
- * false`, so the model gets a clear "invalid arguments" result instead of a
- * silent misinterpretation.
- */
 export function validateArgs(
   schema: Record<string, unknown>,
   args: Record<string, unknown>

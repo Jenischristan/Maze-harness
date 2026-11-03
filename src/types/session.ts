@@ -1,9 +1,3 @@
-/**
- * Session persistence types.
- *
- * Re-exported from `src/types.ts`.
- */
-
 import type { ChatMessage } from "./chat.js";
 import type { ToolCall, ToolResult } from "./tool.js";
 

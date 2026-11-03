@@ -83,13 +83,12 @@ describe("live grid plan is a hard bound", () => {
     const env = await makeEnv({ branchCount: 2, refineCount: 1 });
     const policy: ExplorationPolicy = {
       async solve(e) {
-        // Open the two planned roots, then refine both leaves in one batch.
         const roots = await e.probeBatch([ROOT_ID, ROOT_ID]);
         await e.probeBatch(roots.map((r) => r.id));
       }
     };
     await policy.solve(env);
-    // Batch 1 opens the two planned roots; batch 2 refines both leaves once.
+
     expect(env.rounds).toBe(2);
     const nodes = env.currentTree().nodes;
     expect(nodes.filter((n) => n.parentId === ROOT_ID)).toHaveLength(2);

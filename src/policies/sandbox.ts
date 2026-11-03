@@ -7,14 +7,6 @@ import type { DiscoveryTree, ReplayReport, ReplayScoreConfig, TreeSummary } from
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/**
- * Locate the project root without depending on the caller's cwd.
- *
- * `src/policies/` and the bundled `dist/` both sit two levels below the
- * package root, so walk up until `package.json` is found. Previously the
- * runner was invoked through `<process.cwd()>/node_modules/.bin/tsx`, which
- * broke whenever the harness was started from another directory.
- */
 function packageRoot(): string {
   let dir = here;
   for (let i = 0; i < 6; i += 1) {
@@ -26,15 +18,6 @@ function packageRoot(): string {
   return here;
 }
 
-/**
- * Locate `sandboxRunner.ts`.
- *
- * Source runs find it next to this module (`src/policies/sandboxRunner.ts`).
- * The bundled `dist/cli.js` has no TypeScript siblings, so fall back to the
- * package root's `src/policies/sandboxRunner.ts`. Without this the child
- * process fails with ERR_MODULE_NOT_FOUND and every replay silently scores
- * `-Infinity`, which selection then reads as "no policy works".
- */
 function resolveRunnerPath(): string {
   const nextToHere = join(here, "sandboxRunner.ts");
   if (existsSync(nextToHere)) return nextToHere;
@@ -45,22 +28,16 @@ function resolveRunnerPath(): string {
 
 const runnerPath = resolveRunnerPath();
 
-/**
- * Resolve the TypeScript runner. Prefer a real executable from node_modules
- * (fast path), then fall back to running the tsx CLI module through Node
- * (works when the shell wrapper is missing, e.g. on some CI images).
- */
 function resolveRunner(): { command: string; prefix: string[] } {
   const root = packageRoot();
   const bin = join(root, "node_modules", ".bin", "tsx");
   if (existsSync(bin)) return { command: bin, prefix: [] };
   const cli = join(root, "node_modules", "tsx", "dist", "cli.mjs");
   if (existsSync(cli)) return { command: process.execPath, prefix: [cli] };
-  // Last resort: rely on PATH. Still correct, just not cwd-dependent.
+
   return { command: "tsx", prefix: [] };
 }
 
-/** Environment variables a replay child is allowed to inherit. */
 export const SANDBOX_ENV_ALLOWLIST = [
   "PATH",
   "HOME",
@@ -71,16 +48,6 @@ export const SANDBOX_ENV_ALLOWLIST = [
   "LC_ALL"
 ] as const;
 
-/**
- * Environment handed to a replay child. The policy is untrusted code, so we
- * do not forward API keys or other secrets from the parent process; only the
- * variables needed to run Node are kept.
- *
- * `NODE_OPTIONS` is deliberately absent: it can inject `--require`/`--import`
- * preloads (arbitrary code in the child), `--inspect` (an open debugger port),
- * or disable the module policy. Anything that is not an allowlisted key, and
- * every `NODE_*` key, is dropped.
- */
 export function sandboxEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of SANDBOX_ENV_ALLOWLIST) {
@@ -90,12 +57,6 @@ export function sandboxEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proc
   return env;
 }
 
-/**
- * Node flags passed before the runner script. They remove the most dangerous
- * in-process escape hatches a policy could reach for without needing an OS
- * sandbox: tampering with built-in prototypes, prototype-pollution writes,
- * and loading native addons.
- */
 export const SANDBOX_NODE_FLAGS = [
   "--frozen-intrinsics",
   "--disable-proto=throw",
@@ -106,31 +67,13 @@ export interface SandboxConfig {
   timeoutMs: number;
   memoryMb: number;
   scoreConfig: ReplayScoreConfig;
-  /** Policy beta knob passed to the constructor; defaults to the policy's own. */
+
   beta?: number;
-  /** Effective grid plan handed to the policy constructor, when known. */
+
   plan?: { branchCount: number; refineCount: number };
-  /** Per-tree replay round cap K2; defaults to the tree's recorded limit. */
+
   maxRounds?: number;
 }
-
-/**
- * Replay isolation is a **process boundary**, not a security sandbox.
- *
- * A policy bundle runs in a separate child process with:
- *   - a wall-clock timeout (the process group is SIGKILLed)
- *   - a V8 heap cap (`--max-old-space-size`)
- *   - a scrubbed environment (allowlist only; no API keys, no `NODE_OPTIONS`)
- *   - hardened Node flags (frozen intrinsics, `__proto__` writes throw, no
- *     native addons) and no inspector/`NODE_OPTIONS` preload hook
- *   - no access to the parent's live objects or event loop
- *
- * It does **not** restrict filesystem or network access. Untrusted code that
- * must be contained has to run inside a container / VM / OS sandbox; the name
- * here describes the process isolation only. `src/policies/sandbox.test.ts`
- * pins the guarantees above and the README's "Known limits" section states the
- * remaining gap explicitly.
- */
 
 export interface SandboxResult {
   report: ReplayReport;
@@ -154,8 +97,7 @@ function execRunner(
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
       env: sandboxEnv(),
-      // Windows has no process groups to kill; the fallback `child.kill`
-      // handles it, so do not request POSIX-only behaviour there.
+
       ...(process.platform === "win32" ? { windowsHide: true } : {})
     });
     let timedOut = false;
@@ -167,8 +109,7 @@ function execRunner(
         child.kill("SIGKILL");
       }
     }, cfg.timeoutMs);
-    // StringDecoder-backed: a policy may print non-ASCII output and a chunk
-    // boundary inside a multi-byte sequence must not become U+FFFD.
+
     const outSink = collectText(child.stdout);
     const errSink = collectText(child.stderr);
     child.on("error", (err) => {

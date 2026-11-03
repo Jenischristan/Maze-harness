@@ -1,17 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 
-/**
- * Resolve `rel` against `root` and guarantee the result cannot escape the
- * workspace, including through symlinks.
- *
- * The lexical check alone is not enough: a symlink inside the workspace that
- * points outside it (`ws/link -> /etc`) passes a pure string-prefix test and
- * lets read/write/edit touch arbitrary files. We therefore compare the real
- * path of the deepest *existing* ancestor against the real path of the root.
- * Components that do not exist yet are resolved lexically from that real
- * ancestor, so `write` can still create new directories inside the workspace.
- */
 export function resolveInside(root: string, rel: string): string {
   const base = resolve(root);
   const full = resolve(base, rel || ".");
@@ -26,11 +15,6 @@ export function resolveInside(root: string, rel: string): string {
   return full;
 }
 
-/**
- * realpath the deepest existing ancestor of `full`, then re-append the
- * non-existent tail lexically. This catches a symlink anywhere on the path
- * while still allowing creation of new files/directories.
- */
 function realpathDeepest(full: string): string {
   let cur = full;
   const tail: string[] = [];

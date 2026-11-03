@@ -1,26 +1,16 @@
-/**
- * Bounded retry with exponential backoff, jitter, and a circuit breaker.
- *
- * The provider had a retry loop but no configurable budget, no jitter (so a
- * fleet of runs retried in lockstep and re-saturated the endpoint), and no
- * breaker (a persistently failing endpoint was retried forever). Tool and
- * provider calls now share one policy.
- */
-
 export interface RetryPolicy {
-  /** Total attempts including the first. 1 disables retries. */
   maxAttempts: number;
-  /** Base delay in ms; doubled per attempt. */
+
   baseDelayMs: number;
-  /** Upper bound on one delay. */
+
   maxDelayMs: number;
-  /** Random factor applied to each delay: delay * (1 ± jitter). */
+
   jitter: number;
-  /** Return true when the error is worth retrying. */
+
   retryable: (err: unknown) => boolean;
-  /** Called before each sleep, for logging. */
+
   onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void;
-  /** Abort the wait early (e.g. Ctrl-C). */
+
   signal?: AbortSignal;
 }
 
@@ -32,7 +22,6 @@ export const DEFAULT_RETRY: RetryPolicy = {
   retryable: () => true
 };
 
-/** Default retryability: transient HTTP statuses and network errors. */
 export function isRetryableError(err: unknown): boolean {
   const status = (err as { status?: unknown } | null)?.status;
   if (typeof status === "number") {
@@ -51,10 +40,6 @@ export function computeDelay(attempt: number, policy: RetryPolicy, random = Math
   return Math.max(0, Math.round(capped * factor));
 }
 
-/**
- * Run `fn`, retrying retryable failures. The final failure is rethrown as-is so
- * callers keep the original error (status code, message) rather than a wrapper.
- */
 export async function withRetry<T>(
   fn: (attempt: number) => Promise<T>,
   policy: Partial<RetryPolicy> = {}
@@ -78,7 +63,6 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-/** Cancellable sleep; rejects with an abort error when the signal fires. */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
@@ -100,11 +84,6 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export type BreakerState = "closed" | "open" | "half-open";
 
-/**
- * Consecutive-failure circuit breaker. After `threshold` failures the breaker
- * opens for `cooldownMs`; the next call is a single half-open probe that closes
- * the breaker on success or re-opens it on failure.
- */
 export class CircuitBreaker {
   private stateValue: BreakerState = "closed";
   private failures = 0;
@@ -121,7 +100,6 @@ export class CircuitBreaker {
     return this.stateValue;
   }
 
-  /** Throw a clear error when the breaker is open. */
   assertClosed(): void {
     this.refresh();
     if (this.stateValue === "open") {

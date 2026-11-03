@@ -11,11 +11,12 @@ import {
   resumeSession,
   sessionLines
 } from "../src/session/lifecycle.js";
-import { SessionStore } from "../src/session/store.js";
+import { SessionStore, listSessions } from "../src/session/store.js";
 import { discoverSkills, findSkill, skillPrompt } from "../src/skills.js";
 import { loadMcpConfig, mcpSummary, type McpConnectionResult } from "../src/mcp.js";
 import { SUBAGENTS, findSubAgent } from "../src/subagents.js";
 import { diffWorkspace, diffSummaryLines } from "../src/workspace/diff.js";
+import { gitOrThrow } from "../src/workspace/git.js";
 import { initProject } from "../src/project-init.js";
 import { thinkingBody } from "../src/agent/provider.js";
 
@@ -28,10 +29,6 @@ async function seedSession(dir: string, messages: string[]): Promise<SessionStor
   }
   return store;
 }
-
-/* ------------------------------------------------------------------ */
-/* 1. Session lifecycle                                                */
-/* ------------------------------------------------------------------ */
 
 describe("session lifecycle", () => {
   it("parseSessionArgs understands every action", () => {
@@ -76,6 +73,17 @@ describe("session lifecycle", () => {
     await expect(cloneSession(dir, src.meta.runId, "fork", { at: "nope" })).rejects.toThrow();
   });
 
+  it("a rejected fork leaves no orphan session behind", async () => {
+    // Regression: the fork point was validated after copying, so a bad `at`
+    // wrote a half-built session file before throwing.
+    const dir = await mkdtemp(join(tmpdir(), "dh-fork-orphan-"));
+    const src = await seedSession(dir, ["x"]);
+    const before = await listSessions(dir);
+    await expect(cloneSession(dir, src.meta.runId, "fork", { at: "nope" })).rejects.toThrow();
+    const after = await listSessions(dir);
+    expect(after.map((s) => s.runId).sort()).toEqual(before.map((s) => s.runId).sort());
+  });
+
   it("rename rewrites the header and listSessions shows the name", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dh-rename-"));
     const src = await seedSession(dir, ["hi"]);
@@ -114,7 +122,6 @@ describe("session lifecycle", () => {
   });
 
   it("cloneSession + cloneSession(fork) always yield distinct runIds", async () => {
-    // Pure helper-level check: no dispatch timing involved.
     const dir = await mkdtemp(join(tmpdir(), "dh-clone-fork-"));
     const src = await seedSession(dir, ["seed"]);
     const clone = await cloneSession(dir, src.meta.runId, "clone");
@@ -124,25 +131,17 @@ describe("session lifecycle", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* 2. Thinking mode                                                    */
-/* ------------------------------------------------------------------ */
-
 describe("thinking body translation", () => {
   it("leaves the request untouched by default", () => {
     expect(thinkingBody("deepseek-chat", undefined)).toEqual({});
   });
 
   it("disables thinking per vendor", () => {
-    expect(thinkingBody("deepseek-reasoner", false)).toEqual({ thinking: { type: "disabled" } });
+    expect(thinkingBody("deepseek-reasoner", false)).toEqual({ reasoning: { effort: "minimal" } });
     expect(thinkingBody("claude-3-5-sonnet", false)).toEqual({ thinking: { type: "disabled" } });
     expect(thinkingBody("gpt-4o", false)).toEqual({ reasoning: { effort: "none" } });
   });
 });
-
-/* ------------------------------------------------------------------ */
-/* 3. Skills                                                           */
-/* ------------------------------------------------------------------ */
 
 describe("skills", () => {
   async function skillRoot(): Promise<string> {
@@ -188,10 +187,6 @@ describe("skills", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* 4. Sub-agents                                                       */
-/* ------------------------------------------------------------------ */
-
 describe("sub-agents", () => {
   it("ships the five specialists with descriptions", () => {
     const names = SUBAGENTS.map((a) => a.name);
@@ -217,10 +212,6 @@ describe("sub-agents", () => {
     expect(findSubAgent("nope")).toBeNull();
   });
 });
-
-/* ------------------------------------------------------------------ */
-/* 5. MCP                                                              */
-/* ------------------------------------------------------------------ */
 
 describe("mcp config", () => {
   it("returns no servers when no config exists", async () => {
@@ -265,10 +256,6 @@ describe("mcp config", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* 6. Diff                                                             */
-/* ------------------------------------------------------------------ */
-
 describe("diff", () => {
   it("reports no changes for a clean workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "dh-diff-clean-"));
@@ -277,11 +264,72 @@ describe("diff", () => {
     const diff = await diffWorkspace({ cwd: root });
     expect(diffSummaryLines(diff)).toEqual(["not a git repository"]);
   });
+
+  it("reports untracked files in a repository without HEAD", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dh-diff-untracked-"));
+    await gitOrThrow(["init", "-q", "-b", "main"], root);
+    await writeFile(join(root, "new file.txt"), "line one\nline two\n");
+    const diff = await diffWorkspace({ cwd: root });
+    expect(diff.files).toEqual([{ path: "new file.txt", added: 2, removed: 0 }]);
+    expect(diff.patch).toContain("+++ b/new file.txt");
+  });
+
+  it("reports untracked files alongside modified tracked files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dh-diff-mixed-"));
+    await gitOrThrow(["init", "-q", "-b", "main"], root);
+    await writeFile(join(root, "tracked.txt"), "old\n");
+    await gitOrThrow(["add", "."], root);
+    await gitOrThrow(["commit", "-qm", "seed"], root);
+    await writeFile(join(root, "tracked.txt"), "new\n");
+    await writeFile(join(root, "created.txt"), "fresh\n");
+    const diff = await diffWorkspace({ cwd: root });
+    expect(diff.files).toEqual([
+      { path: "tracked.txt", added: 1, removed: 1 },
+      { path: "created.txt", added: 1, removed: 0 }
+    ]);
+  });
+
+  it("skips binary untracked files instead of corrupting the patch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dh-diff-binary-"));
+    await gitOrThrow(["init", "-q", "-b", "main"], root);
+    await writeFile(join(root, "blob.bin"), Buffer.from([0, 1, 2, 3]));
+    const diff = await diffWorkspace({ cwd: root });
+    expect(diff.files).toEqual([]);
+    expect(diff.note).toBe("no changes");
+  });
 });
 
-/* ------------------------------------------------------------------ */
-/* 7. Project init                                                     */
-/* ------------------------------------------------------------------ */
+describe("goal store", () => {
+  it("never deletes a goal for an empty or unknown id", async () => {
+    // Regression: remove("") matched via startsWith("") and silently deleted
+    // the first goal.
+    const { FileGoalStore } = await import("../src/goals.js");
+    const dir = await mkdtemp(join(tmpdir(), "dh-goals-"));
+    const store = new FileGoalStore(dir);
+    await store.load();
+    const a = store.add("first", "", "s1");
+    const b = store.add("second", "", "s2");
+
+    expect(store.remove("")).toBe(false);
+    expect(store.remove("zzz")).toBe(false);
+    expect(store.goals.map((g) => g.id)).toEqual([a.id, b.id]);
+
+    expect(store.remove(a.id)).toBe(true);
+    expect(store.remove(a.id)).toBe(false);
+    expect(store.goals.map((g) => g.id)).toEqual([b.id]);
+  });
+
+  it("add pauses the previous active goal for the same session", async () => {
+    const { FileGoalStore } = await import("../src/goals.js");
+    const dir = await mkdtemp(join(tmpdir(), "dh-goals2-"));
+    const store = new FileGoalStore(dir);
+    await store.load();
+    store.add("first", "", "s1");
+    store.add("second", "", "s1");
+    expect(store.forSession("s1").filter((g) => g.status === "active")).toHaveLength(1);
+    expect(store.active("s1")!.title).toBe("second");
+  });
+});
 
 describe("project init", () => {
   it("scaffolds the .dream layout and never overwrites", async () => {

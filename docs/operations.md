@@ -30,7 +30,9 @@ entry point and is not committed.
 | `DREAM_LOG_LEVEL`      | `debug`/`info`/`warn`/`error` | `info`                                      |
 | `DREAM_LOG_FORMAT`     | `text` or `json`              | `text`                                      |
 
-Precedence is **flag > environment > default**. There is no config file.
+Precedence is **flag > environment > `maze.json` > default**. Chat sessions are
+written to the XDG data dir (`~/.local/share/maze/sessions`, override with
+`--runs-dir` or `$MAZE_SESSIONS_DIR`), never into the project.
 
 ## Logging
 

@@ -1,30 +1,30 @@
-import { OpenAICompatProvider } from "./agent/provider.js";
+import { NativeProvider, collectStream } from "./agent/provider.js";
 import { ToolExecutor, ToolRegistry } from "./tools/index.js";
 import { Hooks, verifyCommandsToHooks } from "./tools/hooks.js";
 import { DEFAULT_PERMISSION_POLICY, type PermissionPolicy } from "./tools/permissions.js";
 import { DEFAULT_COMPACTION } from "./context/compaction.js";
-import { buildSystemPrompt } from "./agent/prompts.js";
+import { buildSystemPrompt, environmentBlock } from "./agent/prompts.js";
 import { loadMemory } from "./context/memory.js";
 import { runAgentLoop, type AgentEvent } from "./agent/loop.js";
 import { CostTracker } from "./cost.js";
 import { SessionStore } from "./session/store.js";
+import { sessionsDir } from "./chat.js";
+import { discoverAgents, toolsForAgent, type AgentDefinition } from "./agents/definitions.js";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
-/**
- * Sub-agent presets. Each preset is a specialist the main agent (or the user
- * via `/agents`) can delegate a self-contained task to. The sub-agent runs a
- * full tool loop in the same workspace but with its own session and prompt, so
- * it can read many files and burn context without polluting the main thread.
- */
 export interface SubAgentSpec {
   name: string;
   description: string;
-  /** Extra system-prompt section that defines the specialist's role. */
+
   prompt: string;
-  /** Tools the specialist may use (defaults to all builtins). */
+
   tools?: string[];
   maxTurns?: number;
+
+  model?: string;
+
+  readOnly?: boolean;
 }
 
 export const SUBAGENTS: SubAgentSpec[] = [
@@ -39,8 +39,9 @@ export const SUBAGENTS: SubAgentSpec[] = [
       "file paths with line numbers, how the pieces connect, and any gotchas.",
       "Prefer grep/glob over guessing. Stop as soon as the question is answered."
     ].join("\n"),
-    tools: ["read", "grep", "glob", "bash"],
-    maxTurns: 20
+    tools: ["read", "grep", "glob", "ls"],
+    maxTurns: 20,
+    readOnly: true
   },
   {
     name: "review",
@@ -53,8 +54,9 @@ export const SUBAGENTS: SubAgentSpec[] = [
       "cases, and untested behavior. Cite path:line. Do not rewrite the code.",
       "Rank findings by severity and be explicit when something is fine."
     ].join("\n"),
-    tools: ["read", "grep", "glob", "bash"],
-    maxTurns: 24
+    tools: ["read", "grep", "glob", "ls"],
+    maxTurns: 24,
+    readOnly: true
   },
   {
     name: "test",
@@ -78,8 +80,9 @@ export const SUBAGENTS: SubAgentSpec[] = [
       "read-only, then return ordered steps naming files and functions, the risks,",
       "and how each step will be verified. Do not edit anything."
     ].join("\n"),
-    tools: ["read", "grep", "glob"],
-    maxTurns: 16
+    tools: ["read", "grep", "glob", "ls"],
+    maxTurns: 16,
+    readOnly: true
   },
   {
     name: "verify",
@@ -95,10 +98,22 @@ export const SUBAGENTS: SubAgentSpec[] = [
   }
 ];
 
-export function findSubAgent(name: string): SubAgentSpec | null {
+export function specFromDefinition(def: AgentDefinition): SubAgentSpec {
+  return {
+    name: def.name,
+    description: def.description,
+    prompt: def.prompt,
+    tools: def.tools,
+    maxTurns: def.maxTurns,
+    model: def.model,
+    readOnly: def.readOnly
+  };
+}
+
+export function findSubAgent(name: string, specs: SubAgentSpec[] = SUBAGENTS): SubAgentSpec | null {
   const q = name.trim().toLowerCase();
   if (!q) return null;
-  return SUBAGENTS.find((a) => a.name === q) ?? SUBAGENTS.find((a) => a.name.startsWith(q)) ?? null;
+  return specs.find((a) => a.name === q) ?? specs.find((a) => a.name.startsWith(q)) ?? null;
 }
 
 export interface SubAgentRunOptions {
@@ -109,58 +124,60 @@ export interface SubAgentRunOptions {
   baseUrl: string;
   apiKey: string;
   contextWindow?: number;
-  /** Default action when no rule matches. Defaults to "deny". */
+
   permission?: "allow" | "ask" | "deny";
-  /** Full parent policy to inherit (rules, allowlists, and `ask` handler). */
+
   permissionPolicy?: PermissionPolicy;
-  /** Approval handler for inherited `ask` rules, when the caller has one. */
+
   approve?: (input: {
     tool: string;
     pattern: string;
     args: Record<string, unknown>;
   }) => Promise<boolean>;
   verifyCommands?: string[];
-  /** Registry carrying builtin + MCP tools; filtered by the spec's allowlist. */
+
   registry?: ToolRegistry;
   signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
+
+  sessionsDir?: string;
+
+  cost?: CostTracker;
 }
 
 export interface SubAgentResult {
   text: string;
   turns: number;
   stopReason: string;
-  tokens: { promptTokens: number; completionTokens: number; totalTokens: number; usd: number };
+  tokens: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cacheReadTokens: number;
+    reasoningTokens: number;
+    usd: number;
+    calls: number;
+  };
   transcriptPath: string;
 }
 
-/**
- * Run a specialist sub-agent to completion and return its final answer.
- *
- * The sub-agent gets its own SessionStore (persisted under
- * `runs/_sessions/subagents/`) so its exploration is auditable but never mixed
- * into the parent conversation.
- */
 export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentResult> {
   const { spec } = opts;
-  const provider = new OpenAICompatProvider({
+  const model = spec.model ?? opts.model;
+  const provider = new NativeProvider({
     baseUrl: opts.baseUrl,
     apiKey: opts.apiKey,
-    model: opts.model,
-    contextWindow: opts.contextWindow ?? 128_000
+    model,
+    contextWindow: opts.contextWindow
   });
   const session = new SessionStore({
-    dir: resolve(opts.workspaceDir, "runs", "_sessions", "subagents"),
-    model: opts.model,
+    dir: resolve(opts.sessionsDir ?? sessionsDir(), "subagents"),
+    model,
     name: `subagent:${spec.name}`,
     cwd: opts.workspaceDir
   });
   await session.init();
 
-  // Sub-agents used to default to `allow` and never wired an `ask` handler, so
-  // delegated work silently bypassed the user's permission choice. Inherit the
-  // parent policy when one is supplied and fail closed otherwise: an `ask`
-  // without a handler denies, and a missing policy denies mutating tools.
   const base = opts.permissionPolicy ?? DEFAULT_PERMISSION_POLICY;
   const permission: PermissionPolicy = {
     ...base,
@@ -175,20 +192,42 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
   for (const hook of verifyCommandsToHooks(opts.verifyCommands ?? [])) hooks.register(hook);
 
   const baseRegistry = opts.registry ?? new ToolRegistry();
-  const allowed = spec.tools ? new Set(spec.tools) : null;
-  const tools: ToolDefinition[] = baseRegistry
-    .list()
-    .filter((t) => (allowed ? allowed.has(t.name) : true));
+  const tools: ToolDefinition[] = toolsForAgent(
+    {
+      name: spec.name,
+      description: spec.description,
+      mode: "subagent",
+      prompt: spec.prompt,
+      tools: spec.tools,
+      maxTurns: spec.maxTurns,
+      readOnly: spec.readOnly,
+      source: "subagent"
+    },
+    baseRegistry.list()
+  );
   const executor = new ToolExecutor({
     registry: baseRegistry,
     workspaceDir: opts.workspaceDir,
     permission,
-    hooks
+    hooks,
+    mediaTypes: provider.info.capabilities.images
+      ? ["image/png", "image/jpeg", "image/gif", "image/webp"]
+      : undefined
   });
 
   const memory = await loadMemory(opts.workspaceDir);
-  const systemPrompt = await buildSystemPrompt({ memory: memory.text, extra: spec.prompt });
-  const cost = new CostTracker({ model: opts.model });
+  const systemPrompt = await buildSystemPrompt({
+    memory: memory.text,
+    extra: spec.prompt,
+    model,
+    environment: environmentBlock({
+      cwd: opts.workspaceDir,
+      mode: "subagent",
+      gitRepo: false,
+      model
+    })
+  });
+  const cost = opts.cost ?? new CostTracker({ model });
 
   const result = await runAgentLoop(
     {
@@ -198,15 +237,16 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
       session,
       systemPrompt,
       maxTurns: spec.maxTurns ?? 24,
-      compaction: { ...DEFAULT_COMPACTION, contextWindow: opts.contextWindow ?? 128_000 },
+      compaction: { ...DEFAULT_COMPACTION, contextWindow: provider.contextWindow },
       cost,
       signal: opts.signal,
-      onEvent: opts.onEvent
+      onEvent: opts.onEvent,
+      stream: (messages, toolDefs, signal) =>
+        collectStream(provider, messages, toolDefs, { signal })
     },
     opts.task
   );
 
-  // The final assistant text is the last assistant message in the projection.
   let text = "";
   for (const m of session.projection()) {
     if (m.role === "assistant" && m.content.trim()) text = m.content.trim();
@@ -220,10 +260,6 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
   };
 }
 
-/**
- * Wrap sub-agent delegation as a tool so the *main* agent can spawn
- * specialists on its own. This is the harness's "agents as tools" mechanism.
- */
 export function subAgentTool(opts: {
   workspaceDir: string;
   model: string;
@@ -231,27 +267,38 @@ export function subAgentTool(opts: {
   apiKey: string;
   contextWindow?: number;
   registry?: ToolRegistry;
-  /** Parent permission policy inherited by every delegated sub-agent. */
+
   permissionPolicy?: PermissionPolicy;
-  /** Parent approval handler for `ask` decisions. */
+
   approve?: (input: {
     tool: string;
     pattern: string;
     args: Record<string, unknown>;
   }) => Promise<boolean>;
+
+  agents?: AgentDefinition[];
+  sessionsDir?: string;
+  cost?: CostTracker;
 }): ToolDefinition {
+  const specs = [
+    ...SUBAGENTS,
+    ...(opts.agents ?? []).filter((a) => a.mode === "subagent").map(specFromDefinition)
+  ];
+  const byName = new Map<string, SubAgentSpec>();
+  for (const s of specs) byName.set(s.name, s);
+  const available = [...byName.values()];
   return {
     name: "delegate",
     description:
       "Delegate a self-contained sub-task to a specialist sub-agent and get its final report. " +
-      `Available agents: ${SUBAGENTS.map((a) => `${a.name} (${a.description})`).join("; ")}. ` +
+      `Available agents: ${available.map((a) => `${a.name} (${a.description})`).join("; ")}. ` +
       "The sub-agent has its own context, can use tools, and cannot ask follow-up questions — give it a complete task.",
     parameters: {
       type: "object",
       properties: {
         agent: {
           type: "string",
-          description: `One of: ${SUBAGENTS.map((a) => a.name).join(", ")}.`
+          description: `One of: ${available.map((a) => a.name).join(", ")}.`
         },
         task: { type: "string", description: "A complete, self-contained task description." }
       },
@@ -259,13 +306,13 @@ export function subAgentTool(opts: {
       additionalProperties: false
     },
     async execute(args): Promise<ToolResult> {
-      const spec = findSubAgent(String(args.agent ?? ""));
+      const spec = findSubAgent(String(args.agent ?? ""), available);
       if (!spec) {
         return {
           callId: "",
           name: "delegate",
           ok: false,
-          content: `unknown sub-agent: ${String(args.agent)} (available: ${SUBAGENTS.map((a) => a.name).join(", ")})`,
+          content: `unknown sub-agent: ${String(args.agent)} (available: ${available.map((a) => a.name).join(", ")})`,
           error: "unknown-subagent"
         };
       }
@@ -290,7 +337,9 @@ export function subAgentTool(opts: {
           contextWindow: opts.contextWindow,
           registry: opts.registry,
           permissionPolicy: opts.permissionPolicy,
-          approve: opts.approve
+          approve: opts.approve,
+          sessionsDir: opts.sessionsDir,
+          cost: opts.cost
         });
         return {
           callId: "",
@@ -311,3 +360,5 @@ export function subAgentTool(opts: {
     }
   };
 }
+
+export { discoverAgents, type AgentDefinition };

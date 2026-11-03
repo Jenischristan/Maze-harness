@@ -8,15 +8,14 @@ import { writeFileAtomic } from "../util/atomic.js";
 
 export interface SessionAction {
   action: "new" | "clone" | "fork" | "resume" | "name" | "list" | "delete";
-  /** Target session id; omitted for "new". */
+
   id?: string;
-  /** New name for "name". */
+
   name?: string;
-  /** Fork-at entry id (defaults to head). */
+
   at?: string;
 }
 
-/** Parse `/sessions <action> <id> [name…]` into a structured action. */
 export function parseSessionArgs(args: string): SessionAction {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { action: "list" };
@@ -92,7 +91,7 @@ async function readMeta(path: string): Promise<SessionMeta | null> {
       const e = JSON.parse(t) as SessionEntry;
       if (e.kind === "header" && e.note) return JSON.parse(e.note) as SessionMeta;
     } catch {
-      // ignore
+      void 0;
     }
   }
   return null;
@@ -110,23 +109,16 @@ async function rewriteHeader(path: string, patch: Partial<SessionMeta>): Promise
         const meta = JSON.parse(e.note) as SessionMeta;
         e.note = JSON.stringify({ ...meta, ...patch });
         lines[i] = JSON.stringify(e);
-        // Rewrite atomically so a concurrent append or a crash cannot leave
-        // the session truncated mid-line.
+
         await writeFileAtomic(path, lines.join("\n"));
         return;
       }
     } catch {
-      // ignore
+      void 0;
     }
   }
 }
 
-/**
- * Create a *new* session file, optionally seeded with the messages of another
- * session. A clone copies the projection verbatim; a fork copies only the
- * active branch up to `at` (default: head), preserving tree structure so the
- * new session can diverge independently.
- */
 export async function cloneSession(
   dir: string,
   sourceId: string,
@@ -156,36 +148,40 @@ export async function cloneSession(
   });
   await src.init();
 
-  if (mode === "clone") {
-    for (const m of src.projection()) {
-      if (m.synthetic) continue;
-      await store.appendMessage({ ...m, createdAt: new Date().toISOString() });
+  try {
+    if (mode === "clone") {
+      for (const m of src.projection()) {
+        if (m.synthetic) continue;
+        await store.appendMessage({ ...m, createdAt: new Date().toISOString() });
+      }
+      return store;
+    }
+
+    const branch = src.activeBranch();
+    // Validate the fork point before copying so a bad `--at` never leaves a
+    // half-written session file behind.
+    if (opts.at && !branch.some((e) => e.id === opts.at)) {
+      throw new Error(`fork point not on active branch: ${opts.at}`);
+    }
+    for (const e of branch) {
+      if (e.kind === "header") continue;
+      if (e.id === opts.at) break;
+      if (e.kind === "message" && e.message) {
+        await store.appendMessage(e.message);
+      } else if (e.kind === "tool_call" && e.toolCall) {
+        await store.appendToolCall(e.toolCall);
+      } else if (e.kind === "tool_result" && e.toolResult) {
+        await store.appendToolResult(e.toolResult);
+      } else if (e.kind === "note" && e.note) {
+        await store.appendNote(e.note);
+      }
     }
     return store;
+  } catch (err) {
+    // A fork that fails mid-copy must not leave an empty orphan session.
+    await rm(store.path, { force: true }).catch(() => undefined);
+    throw err;
   }
-
-  // Fork: replay entries along the branch, stopping at `at`.
-  const branch = src.activeBranch();
-  for (const e of branch) {
-    if (e.kind === "header") continue;
-    if (e.id === opts.at) break;
-    if (e.kind === "message" && e.message) {
-      await store.appendMessage(e.message);
-    } else if (e.kind === "tool_call" && e.toolCall) {
-      // Tool calls were skipped, so a fork's JSONL was not a faithful prefix
-      // of the source tree: consumers that read `tool_call` entries directly
-      // (export, `session` CLI) saw a different tree.
-      await store.appendToolCall(e.toolCall);
-    } else if (e.kind === "tool_result" && e.toolResult) {
-      await store.appendToolResult(e.toolResult);
-    } else if (e.kind === "note" && e.note) {
-      await store.appendNote(e.note);
-    }
-  }
-  if (!branch.some((e) => e.id === opts.at) && opts.at) {
-    throw new Error(`fork point not on active branch: ${opts.at}`);
-  }
-  return store;
 }
 
 export async function renameSession(dir: string, id: string, name: string): Promise<string> {
@@ -216,7 +212,6 @@ export async function resumeSession(dir: string, id: string): Promise<SessionSto
   return store;
 }
 
-/** Ensure the session directory exists before writing a header. */
 async function ensureSessionDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
 }
@@ -226,7 +221,6 @@ interface ResumeMessage {
   content: string;
 }
 
-/** Convert a session projection into display blocks (best effort). */
 export function projectionToBlocks(
   messages: ChatMessage[]
 ): Array<{ kind: "user" | "assistant" | "note"; text: string }> {

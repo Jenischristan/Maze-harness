@@ -10,7 +10,8 @@ import { ScriptedAgent } from "./agents/scripted.js";
 import { CommandEvaluator } from "./evaluator.js";
 import { DEFAULT_SCORE_CONFIG } from "./score.js";
 import { makeProvider } from "./agent/provider.js";
-import { DEFAULT_PERMISSION_POLICY, type PermissionPolicy } from "./tools/permissions.js";
+import type { PermissionPolicy } from "./tools/permissions.js";
+import { buildPermissionPolicy } from "./tools/approval.js";
 import { versionFromCli } from "./cli-version.js";
 import { parseCommandSpec } from "./util/args.js";
 import { configureLoggingFromEnv } from "./util/logger.js";
@@ -60,10 +61,10 @@ interface CommonOpts {
   task: string;
   verify?: string[];
   permission: string;
-  model: string;
-  baseUrl: string;
-  apiKey: string;
-  contextWindow: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  contextWindow?: string;
   maxTurns: string;
   resume?: boolean;
   maxTokens?: string;
@@ -80,8 +81,7 @@ function parseScoreConfig(o: CommonOpts): ReplayScoreConfig {
     beta2: Number(o.beta2),
     normalize: o.normalize === "none" ? "none" : "relativeToBaseline"
   };
-  // rho/lambda are opt-in: omitting the flags leaves them undefined so the
-  // classic objective (best - beta1*N + beta2*N/k) is reproduced exactly.
+
   if (o.rho !== undefined && o.rho !== "" && Number.isFinite(Number(o.rho))) {
     cfg.rho = Number(o.rho);
   }
@@ -91,7 +91,6 @@ function parseScoreConfig(o: CommonOpts): ReplayScoreConfig {
   return cfg;
 }
 
-/** Parse `--grid 0,0.25,0.5,1` into a rho grid; undefined keeps the default. */
 function parseGrid(raw: string | undefined): readonly number[] | undefined {
   if (raw === undefined || raw.trim() === "") return undefined;
   const cells = raw
@@ -101,11 +100,6 @@ function parseGrid(raw: string | undefined): readonly number[] | undefined {
   return cells.length > 0 ? cells : undefined;
 }
 
-/**
- * Parse `--initial-beta <n>`: a [0,1] scalar for the first live cycle, `off`
- * to disable cross-cycle beta selection (`null`), or undefined to let the
- * policy use its own default.
- */
 function parseInitialBeta(raw: string | undefined): number | null | undefined {
   if (raw === undefined) return undefined;
   const trimmed = raw.trim().toLowerCase();
@@ -118,10 +112,6 @@ function parseInitialBeta(raw: string | undefined): number | null | undefined {
   return n;
 }
 
-/**
- * Parse `--beta-grid 0,0.2,0.6,1` into a beta grid. `off`/`none` returns
- * `null` (sweep disabled). Undefined keeps the paper default.
- */
 function parseBetaGrid(raw: string | undefined): readonly number[] | null | undefined {
   if (raw === undefined) return undefined;
   const trimmed = raw.trim().toLowerCase();
@@ -134,9 +124,6 @@ function parseBetaGrid(raw: string | undefined): readonly number[] | null | unde
 }
 
 function parseTask(o: CommonOpts): TaskSpec {
-  // `split(" ")` broke any evaluator path containing a space and left quote
-  // characters in argv. `parseCommandSpec` accepts a shell-like string with
-  // quoting or a JSON argv array, and never invokes a shell.
   let evaluatorCommand: string[];
   try {
     evaluatorCommand = parseCommandSpec(o.evaluator);
@@ -158,11 +145,6 @@ function parseTask(o: CommonOpts): TaskSpec {
   };
 }
 
-/**
- * Build the per-task budget from the optional `--max-*` flags. Omitted flags
- * leave the corresponding limit unset (no cap), so the default behaviour is
- * unchanged and a caller opts into each ceiling explicitly.
- */
 function budgetFrom(o: CommonOpts): {
   maxTokens?: number;
   maxWallMs?: number;
@@ -184,7 +166,6 @@ function budgetFrom(o: CommonOpts): {
   return budget;
 }
 
-/** Parse a command flag that may be a quoted string or a JSON argv array. */
 function commandFlag(name: string, raw: string): string[] {
   try {
     return parseCommandSpec(raw);
@@ -211,12 +192,6 @@ function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-/**
- * Parse a required finite numeric flag. `--rounds abc` previously produced
- * `NaN`, and `for (round = 1; round <= NaN; ...)` silently ran zero rounds;
- * a `NaN` timeout disabled the timeout entirely. Fail fast with a clear
- * message instead.
- */
 function num(name: string, raw: string | undefined): number {
   const n = Number(raw);
   if (!Number.isFinite(n)) {
@@ -226,7 +201,6 @@ function num(name: string, raw: string | undefined): number {
   return n;
 }
 
-/** Parse a numeric flag that must be positive. */
 function positiveInt(name: string, raw: string | undefined): number {
   const n = num(name, raw);
   if (!Number.isInteger(n) || n <= 0) {
@@ -236,7 +210,6 @@ function positiveInt(name: string, raw: string | undefined): number {
   return n;
 }
 
-/** Parse a numeric flag that must be a non-negative integer. */
 function nonNegativeInt(name: string, raw: string | undefined): number {
   const n = num(name, raw);
   if (!Number.isInteger(n) || n < 0) {
@@ -247,34 +220,7 @@ function nonNegativeInt(name: string, raw: string | undefined): number {
 }
 
 function permissionPolicy(mode: string): PermissionPolicy {
-  const action = mode === "ask" ? "ask" : mode === "deny" ? "deny" : "allow";
-  return {
-    ...DEFAULT_PERMISSION_POLICY,
-    defaultAction: action,
-    ask: async (input) => {
-      // Fail closed when nothing can answer: a piped run has no TTY, and
-      // blocking on stdin would hang the whole task instead of denying.
-      if (!process.stdin.isTTY) {
-        process.stderr.write(`permission denied (no TTY to ask): ${input.tool} ${input.pattern}\n`);
-        return false;
-      }
-      process.stderr.write(`permission required: ${input.tool} ${input.pattern} [y/N] `);
-      const answer = await readLine();
-      return /^y(es)?$/i.test(answer.trim());
-    }
-  };
-}
-
-function readLine(): Promise<string> {
-  return new Promise((resolvePromise) => {
-    const onData = (chunk: Buffer | string): void => {
-      process.stdin.off("data", onData);
-      process.stdin.pause();
-      resolvePromise(chunk.toString());
-    };
-    process.stdin.resume();
-    process.stdin.once("data", onData);
-  });
+  return buildPermissionPolicy(mode);
 }
 
 function commonOptions(cmd: Command): Command {
@@ -359,29 +305,37 @@ function commonOptions(cmd: Command): Command {
       "allow | ask | deny for unmatched commands (default: ask, which fails closed without a TTY)",
       "ask"
     )
-    .option("--model <name>", "model for the tool agent / chat", "deepseek-chat")
     .option(
-      "--base-url <url>",
-      "OpenAI-compatible endpoint",
-      "http://127.0.0.1:8788/v1/chat/completions"
+      "--model <name>",
+      "model for the tool agent / chat (default: $DREAM_AGENT_MODEL or config)"
     )
-    .option("--api-key <key>", "API key for the endpoint", "")
-    .option("--context-window <n>", "model context window in tokens", "128000")
+    .option("--base-url <url>", "OpenAI-compatible endpoint (default: $DREAM_BASE_URL or config)")
+    .option("--api-key <key>", "API key for the endpoint (default: $DREAM_API_KEY or config)")
+    .option(
+      "--context-window <n>",
+      "model context window in tokens (default: from the model table or $DREAM_CONTEXT_WINDOW)"
+    )
     .option("--max-turns <n>", "max agent turns per attempt", "40");
 }
 
 function makeToolProvider(o: CommonOpts) {
-  return makeProvider({
-    kind: "openai",
+  const resolved = resolveConfig({
     baseUrl: o.baseUrl,
     apiKey: o.apiKey,
     model: o.model,
-    contextWindow: Number(o.contextWindow)
+    contextWindow:
+      o.contextWindow === undefined ? undefined : positiveInt("context-window", o.contextWindow)
+  });
+  return makeProvider({
+    kind: "openai",
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
+    model: resolved.model,
+    contextWindow: resolved.contextWindow
   });
 }
 
 async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void> {
-  // Logging is configured before anything can emit: flag > env > default.
   configureLoggingFromEnv(process.env);
   if (opts.logLevel !== undefined || opts.logFormat !== undefined) {
     const resolved = resolveConfig({ logLevel: opts.logLevel, logFormat: opts.logFormat });
@@ -435,8 +389,7 @@ async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void>
     developer: await buildDeveloper(opts),
     seedPolicy: seed,
     rounds: positiveInt("rounds", opts.rounds),
-    // Zero revisions is meaningful: evaluate the incumbent only and select it.
-    // `runOfflinePhase` already handles `revisions = 0` by looping zero times.
+
     revisions: nonNegativeInt("revisions", opts.revisions),
     maxParallelism: positiveInt("workers", opts.workers),
     roundsLimit: positiveInt("round-limit", opts.roundLimit),
@@ -546,22 +499,20 @@ program
   .description("chat with the native tool agent in the current directory")
   .option("--message <text>", "message (otherwise taken from positional args)")
   .argument("[words...]", "message words")
-  .option("--model <name>", "model", "deepseek-chat")
-  .option(
-    "--base-url <url>",
-    "OpenAI-compatible endpoint",
-    "http://127.0.0.1:8788/v1/chat/completions"
-  )
-  .option("--api-key <key>", "API key", "")
-  .option("--context-window <n>", "context window", "128000")
+  .option("--model <name>", "model (default: $DREAM_AGENT_MODEL or config)")
+  .option("--base-url <url>", "OpenAI-compatible endpoint (default: $DREAM_BASE_URL or config)")
+  .option("--api-key <key>", "API key (default: $DREAM_API_KEY or config)")
+  .option("--context-window <n>", "context window (default: model table or $DREAM_CONTEXT_WINDOW)")
   .option("--max-turns <n>", "max agent turns", "40")
-  .option("--runs-dir <dir>", "directory for sessions", "runs")
+  .option("--runs-dir <dir>", "explicit session directory (default: XDG data dir)")
   .option("--verify <cmd>", "verification command (repeatable)", collect, [])
   .option(
     "--permission <mode>",
     "allow | ask | deny (default: ask, fails closed without a TTY)",
     "ask"
   )
+  .option("--no-stream", "disable streaming and use complete() only")
+  .option("--no-snapshots", "disable per-turn git snapshots")
   .option("--max-tokens <n>", "hard token budget for the task")
   .option("--max-wall-ms <n>", "hard wall-clock budget in ms")
   .option("--max-usd <n>", "hard estimated USD budget")
@@ -569,18 +520,24 @@ program
   .option("--log-level <level>", "debug | info | warn | error")
   .option("--log-format <fmt>", "text | json")
   .action(async (words: string[], o: Record<string, unknown>) => {
-    configureLoggingFromEnv(process.env);
-    if (o.logLevel !== undefined || o.logFormat !== undefined) {
-      const resolved = resolveConfig({
-        logLevel: o.logLevel === undefined ? undefined : String(o.logLevel),
-        logFormat: o.logFormat === undefined ? undefined : String(o.logFormat)
-      });
-      configureLoggingFromEnv({
-        DREAM_LOG_LEVEL: resolved.logLevel,
-        DREAM_LOG_FORMAT: resolved.logFormat
-      });
-    }
+    const resolved = resolveConfig({
+      baseUrl: o.baseUrl === undefined ? undefined : String(o.baseUrl),
+      apiKey: o.apiKey === undefined ? undefined : String(o.apiKey),
+      model: o.model === undefined ? undefined : String(o.model),
+      contextWindow:
+        o.contextWindow === undefined
+          ? undefined
+          : positiveInt("context-window", String(o.contextWindow)),
+      logLevel: o.logLevel === undefined ? undefined : String(o.logLevel),
+      logFormat: o.logFormat === undefined ? undefined : String(o.logFormat)
+    });
+    configureLoggingFromEnv({
+      DREAM_LOG_LEVEL: resolved.logLevel,
+      DREAM_LOG_FORMAT: resolved.logFormat
+    });
     const { runChatOnce } = await import("./chat.js");
+    const { setQuestionHandler, ttyQuestionHandler } = await import("./tools/index.js");
+    setQuestionHandler(ttyQuestionHandler);
     const positional = Array.isArray(words) ? words.join(" ") : "";
     const message = String(o.message ?? positional);
     if (!message.trim()) {
@@ -601,18 +558,30 @@ program
     if (o.maxToolCalls !== undefined) {
       budget.maxToolCalls = positiveInt("max-tool-calls", String(o.maxToolCalls));
     }
-    await runChatOnce({
-      message,
-      model: String(o.model),
-      baseUrl: String(o.baseUrl),
-      apiKey: String(o.apiKey),
-      contextWindow: positiveInt("context-window", String(o.contextWindow)),
-      maxTurns: positiveInt("max-turns", String(o.maxTurns)),
-      runsDir: resolve(String(o.runsDir)),
-      verifyCommands: (o.verify as string[]) ?? [],
-      permission: String(o.permission),
-      budget
-    });
+    const controller = new AbortController();
+    const onSigint = (): void => controller.abort();
+    process.on("SIGINT", onSigint);
+    try {
+      await runChatOnce({
+        message,
+        model: resolved.model,
+        baseUrl: resolved.baseUrl,
+        apiKey: resolved.apiKey ?? "",
+        contextWindow: resolved.contextWindow,
+        maxTurns: positiveInt("max-turns", String(o.maxTurns)),
+        runsDir: o.runsDir === undefined ? resolved.sessionsDir : resolve(String(o.runsDir)),
+        verifyCommands: (o.verify as string[]) ?? [],
+        permission: String(o.permission),
+        budget,
+        stream: o.stream !== false,
+        snapshots: o.snapshots !== false,
+        instructionGlobs: resolved.instructions,
+        signal: controller.signal,
+        approve: buildPermissionPolicy(String(o.permission)).ask
+      });
+    } finally {
+      process.off("SIGINT", onSigint);
+    }
   });
 
 program
@@ -631,11 +600,12 @@ program
 program
   .command("sessions")
   .description("list persisted agent sessions (newest first)")
-  .option("--runs-dir <dir>", "directory for sessions", "runs")
+  .option("--runs-dir <dir>", "explicit session directory (default: XDG data dir)")
   .option("--json", "emit JSON", false)
-  .action(async (o: { runsDir: string; json?: boolean }) => {
+  .action(async (o: { runsDir?: string; json?: boolean }) => {
     const { listSessions } = await import("./session/store.js");
-    const sessions = await listSessions(resolve(o.runsDir, "_sessions"));
+    const { sessionsDir } = await import("./chat.js");
+    const sessions = await listSessions(sessionsDir(o.runsDir));
     if (o.json) {
       process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
       return;
@@ -657,11 +627,12 @@ program
   .command("session")
   .description("inspect or export a persisted session by id")
   .argument("<id>", "session runId or file path")
-  .option("--runs-dir <dir>", "directory for sessions", "runs")
+  .option("--runs-dir <dir>", "explicit session directory (default: XDG data dir)")
   .option("--json", "dump raw JSONL entries", false)
-  .action(async (id: string, o: { runsDir: string; json?: boolean }) => {
+  .action(async (id: string, o: { runsDir?: string; json?: boolean }) => {
     const { SessionStore, listSessions } = await import("./session/store.js");
-    const dir = resolve(o.runsDir, "_sessions");
+    const { sessionsDir } = await import("./chat.js");
+    const dir = sessionsDir(o.runsDir);
     let path = id.endsWith(".jsonl") ? resolve(id) : join(dir, `${id}.jsonl`);
     if (!existsSync(path)) {
       const match = (await listSessions(dir)).find((s) => s.runId === id);
@@ -692,13 +663,15 @@ program
   .command("compact")
   .description("summarize a persisted session's history")
   .argument("<id>", "session runId or file path")
-  .option("--runs-dir <dir>", "directory for sessions", "runs")
-  .option("--model <name>", "model", "deepseek-chat")
-  .option("--base-url <url>", "endpoint", "http://127.0.0.1:8788/v1/chat/completions")
-  .action(async (id: string, o: { runsDir: string; model: string; baseUrl: string }) => {
+  .option("--runs-dir <dir>", "explicit session directory (default: XDG data dir)")
+  .option("--model <name>", "model (default: $DREAM_AGENT_MODEL or config)")
+  .option("--base-url <url>", "endpoint (default: $DREAM_BASE_URL or config)")
+  .action(async (id: string, o: { runsDir?: string; model?: string; baseUrl?: string }) => {
     const { SessionStore, listSessions } = await import("./session/store.js");
     const { compact, DEFAULT_COMPACTION } = await import("./context/compaction.js");
-    const dir = resolve(o.runsDir, "_sessions");
+    const { sessionsDir } = await import("./chat.js");
+    const resolved = resolveConfig({ model: o.model, baseUrl: o.baseUrl });
+    const dir = sessionsDir(o.runsDir);
     let path = id.endsWith(".jsonl") ? resolve(id) : join(dir, `${id}.jsonl`);
     if (!existsSync(path)) {
       const match = (await listSessions(dir)).find((s) => s.runId === id);
@@ -708,7 +681,13 @@ program
       }
       path = match.path;
     }
-    const provider = makeProvider({ kind: "openai", baseUrl: o.baseUrl, model: o.model });
+    const provider = makeProvider({
+      kind: "openai",
+      baseUrl: resolved.baseUrl,
+      apiKey: resolved.apiKey,
+      model: resolved.model,
+      contextWindow: resolved.contextWindow
+    });
     const store = new SessionStore({
       dir: dirname(path),
       runId: path

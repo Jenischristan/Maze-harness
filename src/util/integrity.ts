@@ -1,46 +1,22 @@
 import { createHash } from "node:crypto";
 
-/**
- * Append-only JSONL integrity helpers.
- *
- * A crash mid-write can leave a truncated final line. `appendLineSafe` already
- * terminates a torn line before appending, but nothing detected *pre-existing*
- * corruption: a session with a bad line silently lost that entry (it was
- * skipped by `JSON.parse` in a catch), which could drop a tool result and make
- * a resumed transcript subtly wrong.
- *
- * These helpers give callers a way to detect and report corruption instead of
- * hiding it:
- *
- *   - `hashLine` / `verifyLine` detect a line that was altered after the fact,
- *   - `scanJsonl` returns parsed records plus an explicit list of bad lines.
- *
- * Hashing is opt-in per record (`__h`) so existing files keep working.
- */
-
-/** Stable hash of a record's payload (everything except `__h`). */
 export function hashLine(record: Record<string, unknown>): string {
   const { __h: _ignored, ...payload } = record;
   return createHash("sha256").update(stableStringify(payload)).digest("hex").slice(0, 16);
 }
 
-/** Add an integrity hash to a record before it is serialised. */
 export function withIntegrity<T extends Record<string, unknown>>(record: T): T & { __h: string } {
   return { ...record, __h: hashLine(record) };
 }
 
 export interface ScanResult<T> {
   records: T[];
-  /** 1-based line numbers that were empty-free but unparseable. */
+
   corrupt: Array<{ line: number; reason: string }>;
-  /** Records whose stored hash does not match their payload. */
+
   tampered: Array<{ line: number; id?: string }>;
 }
 
-/**
- * Parse newline-delimited JSON, reporting corruption instead of swallowing it.
- * Empty lines are ignored. A record without `__h` is accepted (legacy file).
- */
 export function scanJsonl<T extends Record<string, unknown>>(raw: string): ScanResult<T> {
   const records: T[] = [];
   const corrupt: Array<{ line: number; reason: string }> = [];
@@ -68,11 +44,19 @@ export function scanJsonl<T extends Record<string, unknown>>(raw: string): ScanR
 }
 
 function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  // Mirror JSON.stringify semantics so a hash computed in memory still matches
+  // after the record has been persisted and parsed back: undefined values and
+  // functions are dropped from objects, and become null inside arrays.
+  if (value === null) return "null";
+  if (typeof value === "function" || typeof value === "symbol") return "null";
+  if (typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const obj = value as Record<string, unknown>;
-  return `{${Object.keys(obj)
-    .sort()
-    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
-    .join(",")}}`;
+  const entries: string[] = [];
+  for (const k of Object.keys(obj).sort()) {
+    const v = obj[k];
+    if (v === undefined || typeof v === "function" || typeof v === "symbol") continue;
+    entries.push(`${JSON.stringify(k)}:${stableStringify(v)}`);
+  }
+  return `{${entries.join(",")}}`;
 }

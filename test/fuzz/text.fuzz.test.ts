@@ -1,8 +1,3 @@
-/**
- * Fuzz tests for text/encoding and parsing helpers:
- *   src/context/compaction.ts, src/skills.ts, src/config.ts, src/cost.ts,
- *   src/util/stream.ts, src/goals.ts
- */
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,8 +103,6 @@ describe("fuzz: skills discovery", () => {
       await writeFile(join(skillDir, "SKILL.md"), raw);
       const skills = await discoverSkills(dir);
       for (const s of skills) {
-        // The directory fallback can be empty for a body-less skill; only the
-        // body contract matters, so just require a string name.
         expect(typeof s.name).toBe("string");
         expect(skillPrompt(s)).toContain(s.body);
       }

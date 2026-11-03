@@ -33,12 +33,6 @@ export interface TokenUsage {
   usd: number;
 }
 
-/**
- * Append-only JSONL session store. Each line is a SessionEntry; entries form a
- * tree via parentId. The active branch is the path ending at `head`. Compaction
- * and checkpoint entries are persisted but original messages are never deleted,
- * so any session can be resumed, replayed, or forked.
- */
 export class SessionStore {
   readonly dir: string;
   readonly path: string;
@@ -77,7 +71,7 @@ export class SessionStore {
       try {
         this.entries.push(JSON.parse(trimmed) as SessionEntry);
       } catch {
-        // skip corrupt line
+        void 0;
       }
     }
     this.head = this.entries.length > 0 ? this.entries[this.entries.length - 1]!.id : null;
@@ -102,15 +96,10 @@ export class SessionStore {
   }
 
   private async append(entry: SessionEntry): Promise<void> {
-    // Sessions are long-lived and may contain a tool result that echoed a
-    // credential (an `env` dump, a provider error, a model repeating a token).
-    // Redact at the single write point so nothing unredacted ever reaches disk,
-    // while the in-memory tree keeps the original for this process.
     const stored = redactValue(entry);
     this.entries.push(stored);
     this.head = stored.id;
-    // Atomic-ish append: a torn trailing line from a crashed writer is
-    // terminated before the new record so both remain parseable.
+
     await appendLineSafe(this.path, JSON.stringify(stored));
   }
 
@@ -186,11 +175,6 @@ export class SessionStore {
     return entry;
   }
 
-  /**
-   * Id of the session entry that produced the message at `index` in
-   * `projection()` (i.e. counting only message-bearing entries). Used by
-   * compaction to persist a boundary the projection can actually honor.
-   */
   entryIdForProjectedIndex(index: number): string | null {
     if (index < 0) return null;
     let seen = -1;
@@ -204,7 +188,6 @@ export class SessionStore {
     return null;
   }
 
-  /** Walk from head to root and return entries oldest-first (active branch). */
   activeBranch(): SessionEntry[] {
     const byId = new Map(this.entries.map((e) => [e.id, e]));
     const out: SessionEntry[] = [];
@@ -216,17 +199,12 @@ export class SessionStore {
     return out.reverse();
   }
 
-  /**
-   * Rebuild the message projection sent to the model. Handles compactions
-   * cumulatively: a compaction entry replaces everything before its kept
-   * boundary with its summary (nested compactions keep older summaries too).
-   */
   projection(): ChatMessage[] {
     const branch = this.activeBranch();
     const messages: ChatMessage[] = [];
     let pendingSummary: string | null = null;
     let skipUntil: string | null = null;
-    // First pass: find the last compaction and its kept boundary.
+
     for (let i = branch.length - 1; i >= 0; i -= 1) {
       const e = branch[i]!;
       if (e.kind === "compaction" && e.compaction) {
@@ -235,8 +213,7 @@ export class SessionStore {
         break;
       }
     }
-    // The first user message is the task; it must survive compaction so the
-    // goal is never lost. Remember it before skipping so it can be re-added.
+
     const firstUser = branch.find((e) => e.kind === "message" && e.message?.role === "user");
     let skipping = skipUntil !== null;
     for (const e of branch) {
@@ -244,7 +221,6 @@ export class SessionStore {
       if (skipping && skipUntil !== null) {
         if (e.id === skipUntil) skipping = false;
         else {
-          // Keep only the original task message from the skipped region.
           if (e.id === firstUser?.id && e.message) messages.push(e.message);
           continue;
         }
@@ -252,12 +228,6 @@ export class SessionStore {
       if (e.kind === "message" && e.message) {
         messages.push(e.message);
       } else if (e.kind === "tool_call" && e.toolCall) {
-        // Tool calls are normally embedded in the assistant message that
-        // requested them. When that message is missing (fork/clone can drop
-        // it, and a fork point may fall between the call and its result), the
-        // result below would carry a dangling `tool_call_id`, which strict
-        // providers reject. Fold a standalone call into a synthetic assistant
-        // message so every tool result has a matching tool_calls entry.
         const last = messages.at(-1);
         const already =
           last?.role === "assistant" && (last.toolCalls ?? []).some((c) => c.id === e.toolCall!.id);
@@ -276,11 +246,7 @@ export class SessionStore {
         }
       } else if (e.kind === "tool_result" && e.toolResult) {
         const r = e.toolResult;
-        // Guarantee the result's call id exists on a preceding assistant
-        // turn. When the requesting assistant message is missing (fork/clone
-        // can drop it), synthesize a matching tool call so the transcript is
-        // always valid for strict providers instead of leaving a dangling
-        // `tool_call_id`.
+
         const hasCall = messages.some(
           (m) => m.role === "assistant" && (m.toolCalls ?? []).some((c) => c.id === r.callId)
         );
@@ -323,7 +289,7 @@ export class SessionStore {
           usage.totalTokens += parsed.totalTokens ?? 0;
           usage.usd += parsed.usd ?? 0;
         } catch {
-          // ignore
+          void 0;
         }
       }
     }
@@ -335,7 +301,6 @@ export class SessionStore {
   }
 }
 
-/** Read up to `len` bytes starting at `offset`. */
 async function readChunk(path: string, offset: number, len: number): Promise<string> {
   const fh = await open(path, "r");
   try {
@@ -347,7 +312,6 @@ async function readChunk(path: string, offset: number, len: number): Promise<str
   }
 }
 
-/** Read the last `len` bytes of a file, dropping a partial first line. */
 async function readTail(path: string, len: number): Promise<string> {
   const fh = await open(path, "r");
   try {
@@ -370,7 +334,6 @@ function shortId(): string {
   return randomUUID().replace(/-/g, "").slice(0, 10);
 }
 
-/** List session files in a directory with basic metadata. */
 export async function listSessions(dir: string): Promise<SessionInfo[]> {
   let files: string[] = [];
   try {
@@ -381,9 +344,7 @@ export async function listSessions(dir: string): Promise<SessionInfo[]> {
   const out: SessionInfo[] = [];
   for (const file of files) {
     const path = join(dir, file);
-    // Read the header first, then only the tail for counts/usage. Reading an
-    // unbounded JSONL file in full on every /sessions was O(total bytes) and
-    // made listing slow as sessions grew.
+
     const head = await readChunk(path, 0, 64 * 1024).catch(() => "");
     let meta: SessionMeta | null = null;
     for (const line of head.split("\n")) {
@@ -396,12 +357,14 @@ export async function listSessions(dir: string): Promise<SessionInfo[]> {
           break;
         }
       } catch {
-        // ignore
+        void 0;
       }
     }
     if (!meta) continue;
-    const tail = await readTail(path, 256 * 1024).catch(() => "");
-    const lines = tail.split("\n").filter((l) => l.trim());
+    // Counts and usage must cover the whole file: a session longer than the
+    // tail window used to under-report messages and drop earlier usage notes.
+    const all = await readFile(path, "utf8").catch(() => "");
+    const lines = all.split("\n").filter((l) => l.trim());
     let messageCount = 0;
     let lastActive = "";
     let tokens = 0;
@@ -420,7 +383,7 @@ export async function listSessions(dir: string): Promise<SessionInfo[]> {
         }
         lastActive = e.timestamp;
       } catch {
-        // ignore
+        void 0;
       }
     }
     out.push({

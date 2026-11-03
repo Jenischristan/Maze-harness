@@ -5,14 +5,6 @@ import { join, resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { taskChildEnv } from "./util/env.js";
 
-/**
- * Minimal Model Context Protocol (MCP) client over stdio.
- *
- * Only the pieces the harness needs are implemented: `initialize`,
- * `tools/list`, and `tools/call`, using newline-delimited JSON-RPC 2.0. This is
- * deliberately small and dependency-free, but wire-compatible with real MCP
- * servers (filesystem, git, sqlite, …).
- */
 export interface McpServerConfig {
   name: string;
   command: string;
@@ -35,8 +27,8 @@ interface JsonRpcResponse {
 }
 
 const MCP_CONFIG_FILES = [".dream/mcp.json", ".mcp.json", "mcp.json"];
+const PROJECT_CONFIG_FILES = ["maze.json", "opencode.json", ".maze.json"];
 
-/** Load `mcpServers` from the first config file that exists. */
 export async function loadMcpConfig(root: string): Promise<McpServerConfig[]> {
   for (const rel of MCP_CONFIG_FILES) {
     const path = join(resolve(root), rel);
@@ -48,8 +40,6 @@ export async function loadMcpConfig(root: string): Promise<McpServerConfig[]> {
       const servers = parsed.mcpServers ?? {};
       const out: McpServerConfig[] = [];
       for (const [name, value] of Object.entries(servers)) {
-        // `/init` writes a disabled `_example` entry. Anything whose name
-        // starts with `_` is a template/comment, not a server to spawn.
         if (name.startsWith("_")) continue;
         const v = value as Record<string, unknown>;
         if (typeof v.command !== "string") continue;
@@ -63,7 +53,56 @@ export async function loadMcpConfig(root: string): Promise<McpServerConfig[]> {
       }
       return out;
     } catch {
-      // fall through to the next candidate
+      void 0;
+    }
+  }
+  return loadProjectMcpConfig(root);
+}
+
+function normalizeMcpEntry(name: string, value: unknown): McpServerConfig | null {
+  if (name.startsWith("_")) return null;
+  const v = value as Record<string, unknown>;
+  if (!v || typeof v !== "object") return null;
+  if (v.enabled === false) return null;
+  if (v.type === "remote" && !v.command) return null;
+  const command = v.command;
+  if (typeof command === "string") {
+    return {
+      name,
+      command,
+      args: Array.isArray(v.args) ? v.args.map(String) : [],
+      env: v.env && typeof v.env === "object" ? (v.env as Record<string, string>) : undefined
+    };
+  }
+  if (Array.isArray(command) && command.length > 0) {
+    const argv = command.map(String);
+    return {
+      name,
+      command: argv[0]!,
+      args: argv.slice(1),
+      env: v.env && typeof v.env === "object" ? (v.env as Record<string, string>) : undefined
+    };
+  }
+  return null;
+}
+
+export async function loadProjectMcpConfig(root: string): Promise<McpServerConfig[]> {
+  for (const rel of PROJECT_CONFIG_FILES) {
+    const path = join(resolve(root), rel);
+    if (!existsSync(path)) continue;
+    const raw = await readFile(path, "utf8").catch(() => "");
+    if (!raw.trim()) continue;
+    try {
+      const parsed = JSON.parse(raw) as { mcp?: Record<string, unknown> };
+      const servers = parsed.mcp ?? {};
+      const out: McpServerConfig[] = [];
+      for (const [name, value] of Object.entries(servers)) {
+        const entry = normalizeMcpEntry(name, value);
+        if (entry) out.push(entry);
+      }
+      return out;
+    } catch {
+      void 0;
     }
   }
   return [];
@@ -87,8 +126,18 @@ export class McpClient {
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk: string) => this.onData(chunk));
     proc.stderr.setEncoding("utf8");
-    // Drain stderr: some servers are chatty and would otherwise block.
+
     proc.stderr.on("data", () => undefined);
+    // A spawn failure (ENOENT, EACCES) is emitted as an `error` event on the
+    // ChildProcess. Without a listener it becomes an uncaught exception that
+    // crashes the host process, so fail pending requests here instead.
+    proc.on("error", (err: Error) => {
+      this.closed = true;
+      for (const [, p] of this.pending) {
+        p.reject(new Error(`mcp server ${name} failed to start: ${err.message}`));
+      }
+      this.pending.clear();
+    });
     proc.on("exit", () => {
       this.closed = true;
       for (const [, p] of this.pending) p.reject(new Error(`mcp server ${name} exited`));
@@ -99,13 +148,13 @@ export class McpClient {
   static async connect(cfg: McpServerConfig, timeoutMs = 15_000): Promise<McpClient> {
     const proc = spawn(cfg.command, cfg.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
-      // An MCP server is declared by a file inside the workspace, so treat it
-      // as untrusted: no provider credentials, no loader/preload variables.
+
       env: taskChildEnv(process.env, cfg.env)
     }) as ChildProcessWithoutNullStreams;
+    // Attach the lifecycle listeners synchronously, before any await: the
+    // spawn `error` event can fire on the next tick.
     const client = new McpClient(proc, cfg.name);
-    // A failed handshake must not leak the child: connectMcpServers records
-    // the error and moves on, so an orphan would accumulate per `/mcp reload`.
+
     try {
       const init = (await client.request(
         "initialize",
@@ -167,7 +216,7 @@ export class McpClient {
     try {
       msg = JSON.parse(line) as JsonRpcResponse;
     } catch {
-      return; // servers may log non-JSON to stdout; ignore
+      return;
     }
     const id = typeof msg.id === "number" ? msg.id : null;
     if (id === null) return;
@@ -187,7 +236,7 @@ export class McpClient {
     try {
       this.write({ jsonrpc: "2.0", method, params });
     } catch {
-      // best effort
+      void 0;
     }
   }
 
@@ -246,12 +295,11 @@ export class McpClient {
       this.proc.stdin.end();
       this.proc.kill();
     } catch {
-      // ignore
+      void 0;
     }
   }
 }
 
-/** Wrap a connected MCP tool as a harness ToolDefinition. */
 function mcpToolDefinition(client: McpClient, info: McpToolInfo): ToolDefinition {
   return {
     name: `mcp__${info.server}__${info.name}`.replace(/[^A-Za-z0-9_]/g, "_"),
@@ -276,7 +324,6 @@ export interface McpConnectionResult {
   errors: Array<{ server: string; message: string }>;
 }
 
-/** Connect every configured server; failures are reported, never thrown. */
 export async function connectMcpServers(
   servers: McpServerConfig[],
   opts: { timeoutMs?: number } = {}
@@ -299,7 +346,6 @@ export async function connectMcpServers(
   return { clients, tools, errors };
 }
 
-/** Human-readable summary of connected servers/tools. */
 export function mcpSummary(result: McpConnectionResult): string[] {
   const lines: string[] = [];
   if (result.clients.length === 0 && result.errors.length === 0) {

@@ -1,30 +1,3 @@
-/**
- * Fixed parallel refine policy (seed pi_1).
- *
- * Rules:
- * - Open up to `branches` independent branches from the root.
- * - In each round, refine the current leaf of every opened branch whose attempt
- *   count is still below `refinements`, highest score first.
- * - Use leftover slots to open another branch from the root while legal.
- * - Each probe returns a deterministic recorded observation in replay; the
- *   policy never reads anything outside `env`.
- *
- * Beta (paper Appendix B.2): `beta` in [0,1] is read once in the constructor and
- * routed through one `schedule()`. High beta means more width, deeper patience
- * and weaker pruning; low beta means fewer probes and earlier stopping. Beta is
- * fixed for the whole rollout and never adapted from observations inside
- * `solve()`.
- *
- * Grid planning (paper Appendix B.2): `planGrid(context)` runs before a new
- * live cycle and returns `GridPlan(branchCount, refineCount, reason)` on every
- * path. It uses only prefix-safe context facts, never a current episode's
- * outcomes.
- *
- * This file is loaded as *source text* by `src/policies/seed.ts` and compiled by
- * esbuild inside the replay sandbox, so it must stay import-free and
- * self-contained. `src/policies/fixedParallelRefine.ts` is the typed twin used
- * by the harness itself; `test/policies-parity.test.ts` pins them together.
- */
 const ROOT = "root";
 
 export default class FixedParallelRefine {
@@ -47,10 +20,6 @@ export default class FixedParallelRefine {
     }
   }
 
-  /**
-   * Route every behavioral threshold through one schedule. Called once per
-   * decision context so beta has exactly one meaning inside an episode.
-   */
   private schedule(maxParallelism: number, legalRootCap: number) {
     const b = this.beta;
     const branches = Math.max(1, Math.round(1 + b * 2));
@@ -62,11 +31,6 @@ export default class FixedParallelRefine {
     };
   }
 
-  /**
-   * Next-cycle grid plan. Widen when deepening plateaus, deepen when gains
-   * arrive late on a stable set of branches, bootstrap conservatively when
-   * history is thin. Always returns a plan.
-   */
   planGrid(
     context: import("../../types.js").GridPlanningContext
   ): import("../../types.js").GridPlan {
@@ -130,10 +94,7 @@ export default class FixedParallelRefine {
     const legalRoots = env.legalRoots();
     const openCap = Number.isFinite(legalRoots) ? Math.max(1, legalRoots) : this.branches;
     const s = this.schedule(env.maxParallelism, openCap);
-    // The runner's effective plan is a hard bound (paper Appendix B.2): width
-    // never exceeds it, and the refine cap bounds each branch's attempts. The
-    // plan arrives through the constructor, so it also applies in replay where
-    // `planGrid` is never called.
+
     const plan = this.plan;
     const wantBranches = plan
       ? Math.min(plan.branchCount, s.branches, this.branches)
@@ -145,8 +106,7 @@ export default class FixedParallelRefine {
       const batch = this.nextBatch(env, wantBranches, wantRefines, s.stopBelowBaseline);
       if (batch.length === 0) return;
       const obs = await env.probeBatch(batch);
-      // A batch of non-root ids that produced nothing means the frontier is
-      // stale; stop instead of spinning until the round budget runs out.
+
       if (obs.length === 0 && batch.every((id) => id !== ROOT)) return;
     }
     if (!env.done && env.roundsRemaining > 0) {

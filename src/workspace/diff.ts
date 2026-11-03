@@ -1,40 +1,29 @@
 import { git } from "./git.js";
 
 export interface DiffOptions {
-  /** Repo / workspace directory to diff in. */
   cwd: string;
-  /** Diff against this ref instead of the working tree vs HEAD. */
+
   ref?: string;
-  /** Restrict to a path. */
+
   path?: string;
-  /** Include staged changes (default true) and unstaged (default true). */
+
   staged?: boolean;
   unstaged?: boolean;
-  /** Cap the number of lines returned. */
+
   maxLines?: number;
 }
 
 export interface DiffResult {
-  /** Unified diff text (empty when there are no changes). */
   patch: string;
   files: Array<{ path: string; added: number; removed: number }>;
   added: number;
   removed: number;
-  /** True when the output was cut at `maxLines`. */
+
   truncated: boolean;
-  /** Why the diff is empty: clean tree, not a repo, or an error. */
+
   note?: string;
 }
 
-/**
- * Produce a unified diff of the workspace and a per-file summary.
- *
- * Three modes, in order of precedence:
- *   - `ref` set:      `git diff <ref>` (everything since that commit)
- *   - staged/unstaged: `git diff HEAD` covers both for a normal tree
- *   - unborn HEAD:    `git diff` against the empty tree so a fresh repo still
- *                     shows its files instead of failing with "unknown revision"
- */
 export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
   const { cwd } = opts;
   const inside = await git(["rev-parse", "--is-inside-work-tree"], cwd);
@@ -56,7 +45,6 @@ export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
   } else if (hasHead) {
     args.push("HEAD");
   } else {
-    // Unborn branch: diff the index/working tree against the empty tree.
     const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     args.push(emptyTree);
   }
@@ -73,7 +61,12 @@ export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
       note: res.stderr.trim() || `git diff failed (exit ${res.code})`
     };
   }
-  const raw = res.stdout;
+  // `git diff` ignores untracked files. For the default (whole-workspace, not
+  // against an explicit ref) view, include them as synthetic patches so a file
+  // an agent just created is visible instead of reported as "no changes".
+  const untrackedPatch =
+    opts.ref || opts.path ? "" : await untrackedFilesPatch(cwd);
+  const raw = [res.stdout, untrackedPatch].filter((s) => s.trim()).join("\n");
   if (!raw.trim()) {
     return { patch: "", files: [], added: 0, removed: 0, truncated: false, note: "no changes" };
   }
@@ -107,7 +100,39 @@ export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
   return { patch, files, added, removed, truncated };
 }
 
-/** One-line-per-file summary used by `report`/`diff` output. */
+async function untrackedFilesPatch(cwd: string): Promise<string> {
+  const list = await git(["ls-files", "--others", "--exclude-standard", "-z"], cwd);
+  if (list.code !== 0) return "";
+  const names = list.stdout.split("\u0000").filter((n) => n.length > 0);
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const parts: string[] = [];
+  for (const name of names) {
+    let content: string;
+    try {
+      const buf = await readFile(join(cwd, name));
+      // Binary files cannot be represented as a text patch.
+      if (buf.includes(0)) continue;
+      content = buf.toString("utf8");
+    } catch {
+      continue;
+    }
+    const lines = content.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    parts.push(
+      [
+        `diff --git a/${name} b/${name}`,
+        "new file mode 100644",
+        "--- /dev/null",
+        `+++ b/${name}`,
+        `@@ -0,0 +1,${lines.length} @@`,
+        ...lines.map((l) => `+${l}`)
+      ].join("\n")
+    );
+  }
+  return parts.length > 0 ? `${parts.join("\n")}\n` : "";
+}
+
 export function diffSummaryLines(result: DiffResult, max = 12): string[] {
   if (result.note && result.files.length === 0) return [result.note];
   const lines = result.files

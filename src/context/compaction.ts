@@ -1,32 +1,27 @@
 import type { ChatMessage, ChatProvider } from "../types.js";
 
 export interface CompactionConfig {
-  /** Context window in tokens. */
   contextWindow: number;
-  /** Tokens reserved for the next response + tools. */
+
   reserveTokens: number;
-  /** Recent tokens kept verbatim after a cut. */
+
   keepRecentTokens: number;
-  /** Trigger compaction when projected tokens exceed this. */
+
   threshold?: number;
+
+  pruneToolOutputs?: boolean;
+
+  pruneToolOutputMinTokens?: number;
 }
 
 export const DEFAULT_COMPACTION: Omit<CompactionConfig, "contextWindow"> = {
   reserveTokens: 16_384,
-  keepRecentTokens: 20_000
+  keepRecentTokens: 20_000,
+  pruneToolOutputs: true,
+  pruneToolOutputMinTokens: 800
 };
 
-/**
- * Cheap token estimate: ~4 chars per token for ASCII prose.
- *
- * The ratio is deliberately conservative for CJK and code: those tokenize at
- * roughly 1-2 chars per token, so this heuristic *under*-counts them. Callers
- * apply `ESTIMATE_SAFETY` to leave headroom instead of trusting the raw number,
- * which previously let a CJK-heavy session overflow the model window.
- */
 export function estimateTokens(text: string): number {
-  // Count non-ASCII code units as one token each: they are almost always a
-  // full token or more, whereas ASCII averages ~4 chars per token.
   let ascii = 0;
   let wide = 0;
   for (const ch of text) {
@@ -36,7 +31,6 @@ export function estimateTokens(text: string): number {
   return Math.ceil(ascii / 4) + wide;
 }
 
-/** Safety factor applied when deciding whether the context fits. */
 const ESTIMATE_SAFETY = 1.15;
 
 function estimateMessageTokens(m: ChatMessage): number {
@@ -58,35 +52,30 @@ export function projectTokens(messages: ChatMessage[]): number {
   return n;
 }
 
-export function shouldCompact(messages: ChatMessage[], cfg: CompactionConfig): boolean {
+export function shouldCompact(
+  messages: ChatMessage[],
+  cfg: CompactionConfig,
+  observedPromptTokens?: number
+): boolean {
   const threshold = cfg.threshold ?? Math.max(1024, cfg.contextWindow - cfg.reserveTokens);
-  // Leave headroom for the heuristic's error in the other direction: the
-  // estimate under-counts CJK/code, so compact slightly before the raw number
-  // says we must.
+  if (typeof observedPromptTokens === "number" && observedPromptTokens > 0) {
+    return observedPromptTokens > threshold;
+  }
   return projectTokens(messages) * ESTIMATE_SAFETY > threshold;
 }
 
 export interface CompactionResult {
-  /** Messages to send (summary + kept tail), with `compacted` flags on originals. */
   messages: ChatMessage[];
   summary: string;
-  /** Index into the original array of the first kept message, or -1. */
+
   firstKeptIndex: number;
-  /**
-   * Id of the first session entry that must be kept. Callers pass this to
-   * `appendCompaction` so `projection()` actually drops the older entries;
-   * passing `null` only prepends a summary and never shrinks the context.
-   */
+
   firstKeptEntryId: string | null;
   tokensBefore: number;
   tokensAfter: number;
   compactedCount: number;
 }
 
-/**
- * Find a cut point by walking backwards until keepRecentTokens is reached.
- * Never cuts so that a tool result is separated from its tool call.
- */
 function findCut(messages: ChatMessage[], keepRecentTokens: number): number {
   let tokens = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -95,12 +84,32 @@ function findCut(messages: ChatMessage[], keepRecentTokens: number): number {
     tokens += estimateMessageTokens(m);
     if (tokens >= keepRecentTokens) {
       let cut = i;
-      // Don't cut immediately after an assistant tool call without its result.
+
       while (cut < messages.length && messages[cut]?.role === "tool") cut += 1;
       return cut;
     }
   }
   return 0;
+}
+
+export function prunedPlaceholder(name: string, bytes: number): string {
+  return `[old tool output pruned by compaction: ${name}, ${bytes} bytes. Re-run the tool if the content is still needed.]`;
+}
+
+export function pruneToolOutputs(
+  messages: ChatMessage[],
+  opts: { minTokens: number; keepRecentTokens: number }
+): { messages: ChatMessage[]; pruned: number } {
+  const cut = findCut(messages, opts.keepRecentTokens);
+  let pruned = 0;
+  const out = messages.map((m, i) => {
+    if (i >= cut || m.role !== "tool") return m;
+    if (m.content.startsWith("[old tool output pruned")) return m;
+    if (estimateMessageTokens(m) < opts.minTokens) return m;
+    pruned += 1;
+    return { ...m, content: prunedPlaceholder(m.name ?? "tool", Buffer.byteLength(m.content)) };
+  });
+  return { messages: out, pruned };
 }
 
 export async function compact(
@@ -110,11 +119,27 @@ export async function compact(
   signal?: AbortSignal
 ): Promise<CompactionResult> {
   const tokensBefore = projectTokens(messages);
-  const cut = findCut(messages, cfg.keepRecentTokens);
-  const toSummarize = messages.slice(0, cut).filter((m) => !m.compacted && !m.synthetic);
-  if (toSummarize.length === 0) {
+  let working = messages;
+  if (cfg.pruneToolOutputs !== false) {
+    const pruned = pruneToolOutputs(working, {
+      minTokens: cfg.pruneToolOutputMinTokens ?? 800,
+      keepRecentTokens: cfg.keepRecentTokens
+    });
+    working = pruned.messages;
+  }
+  const cut = findCut(working, cfg.keepRecentTokens);
+
+  const priorSummaries = working
+    .slice(0, cut)
+    .filter((m) => m.synthetic && m.role === "system")
+    .map((m) => m.content.replace(/^## Summary of earlier conversation\s*\n*/, "").trim())
+    .filter(Boolean);
+  const toSummarize = working
+    .slice(0, cut)
+    .filter((m) => !m.compacted && !(m.synthetic && m.role === "system"));
+  if (toSummarize.length === 0 && priorSummaries.length === 0) {
     return {
-      messages: [...messages],
+      messages: [...working],
       summary: "",
       firstKeptIndex: cut,
       firstKeptEntryId: null,
@@ -123,7 +148,20 @@ export async function compact(
       compactedCount: 0
     };
   }
-  const summary = await provider.summarize(toSummarize, signal);
+  const summary = await provider.summarize(
+    [
+      ...(priorSummaries.length > 0
+        ? [
+            {
+              role: "system" as const,
+              content: `## Summary of earlier conversation\n\n${priorSummaries.join("\n\n")}`
+            }
+          ]
+        : []),
+      ...toSummarize
+    ],
+    signal
+  );
   const summaryMessage: ChatMessage = {
     role: "system",
     content: `## Summary of earlier conversation\n\n${summary}`,
@@ -131,8 +169,8 @@ export async function compact(
     createdAt: new Date().toISOString()
   };
   const out: ChatMessage[] = [];
-  for (let i = 0; i < messages.length; i += 1) {
-    const m = messages[i]!;
+  for (let i = 0; i < working.length; i += 1) {
+    const m = working[i]!;
     if (i < cut) {
       out.push({ ...m, compacted: true });
     } else {

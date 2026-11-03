@@ -1,24 +1,12 @@
-/**
- * Per-task budgets.
- *
- * `maxTurns` was the only stop condition, so a task could still burn an
- * unbounded number of tokens, wall-clock time or money in a handful of turns
- * (large files, long evaluator output, a provider that keeps returning tool
- * calls). `Budget` is a monotone guard checked before every turn and after
- * every provider response. Exceeding any limit aborts the loop cleanly with
- * `stopReason: "budget"` instead of hanging.
- */
-
 export interface BudgetLimits {
-  /** Maximum agent turns. */
   maxTurns?: number;
-  /** Maximum total prompt+completion tokens across the task. */
+
   maxTokens?: number;
-  /** Maximum wall-clock time in ms. */
+
   maxWallMs?: number;
-  /** Maximum estimated USD spend. */
+
   maxUsd?: number;
-  /** Maximum number of tool calls executed. */
+
   maxToolCalls?: number;
 }
 
@@ -48,26 +36,22 @@ export class Budget {
     this.startedAt = startedAt;
   }
 
-  /** Record one completed turn. */
   turn(): void {
     this.used.turns += 1;
     this.refreshWall();
   }
 
-  /** Record provider token usage and its estimated cost. */
   spend(tokens: number, usd: number): void {
     if (Number.isFinite(tokens) && tokens > 0) this.used.tokens += tokens;
     if (Number.isFinite(usd) && usd > 0) this.used.usd += usd;
     this.refreshWall();
   }
 
-  /** Record `n` executed tool calls. */
   toolCalls(n: number): void {
     if (Number.isFinite(n) && n > 0) this.used.toolCalls += n;
     this.refreshWall();
   }
 
-  /** Return the first exceeded limit, or null. */
   check(): BudgetExceeded | null {
     this.refreshWall();
     const { maxTurns, maxTokens, maxWallMs, maxUsd, maxToolCalls } = this.limits;
@@ -98,7 +82,6 @@ export class Budget {
   }
 }
 
-/** Human-readable one-liner for a budget violation. */
 export function describeBudgetExceeded(e: BudgetExceeded): string {
   const label =
     e.kind === "turns"

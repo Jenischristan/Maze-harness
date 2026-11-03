@@ -10,8 +10,7 @@ export function buildFeedbackReport(
     baselineScore: tree.baselineScore,
     revealedScores: report.revealed.map((o) => o.score),
     rounds: report.k,
-    // Without the batch sizes the lambda (width) penalty is silently dropped,
-    // so feedback showed a different objective than the one selection used.
+
     batchSizes: report.batches.map((b) => b.length),
     config
   });

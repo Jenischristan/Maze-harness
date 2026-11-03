@@ -1,7 +1,3 @@
-/**
- * Fuzz + property tests for the append-only session store:
- *   src/session/store.ts
- */
 import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,9 +123,6 @@ describe("fuzz: session persistence", () => {
   it(
     "listSessions reports every readable session and skips garbage",
     fuzzCases({ seed: 0xc04, runs: 20 }, async (rng) => {
-      // Each case gets its own directory: the outer `dir` is shared with the
-      // other cases in this file, so sessions (and `junk.jsonl`) from earlier
-      // iterations otherwise leak into this listing.
       const caseDir = join(dir, `case-${rng.int(0, 1_000_000_000)}`);
       await mkdir(caseDir, { recursive: true });
       const n = rng.int(0, 3);

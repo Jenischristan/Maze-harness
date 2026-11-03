@@ -10,10 +10,6 @@ function script(name: string): string {
   return join(here, "..", "..", "agents", "scripts", name);
 }
 
-/**
- * Renders the verification summary appended to the agent's next context so the
- * agent can see whether its edits passed tests/typecheck/lint.
- */
 export function formatHookFeedback(
   results: Array<{ name: string; ok: boolean; output: string; timedOut: boolean }>
 ): string {
@@ -36,18 +32,13 @@ export function formatHookFeedback(
 }
 
 export interface DefaultHooksOptions {
-  /** Workspace the hooks run inside. */
   workspaceDir: string;
-  /** Per-hook timeout. */
+
   timeoutMs?: number;
-  /** Max captured output per hook. */
+
   maxOutputBytes?: number;
 }
 
-/**
- * Build a HookRegistry from verification commands (test/typecheck/lint).
- * Hooks run after every mutating tool call so the agent gets immediate feedback.
- */
 export function makeDefaultHooks(
   commands: string[],
   opts: DefaultHooksOptions

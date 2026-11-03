@@ -5,14 +5,6 @@ import { computeScore, meanScoreOverGrid, RHO_GRID, DEFAULT_SCORE_CONFIG } from 
 import { syntheticTree } from "./synthetic.js";
 import type { ExplorationEnv, ExplorationPolicy } from "../src/types.js";
 
-/**
- * Dream-core regression tests added with the review fixes.
- *
- * They pin the invariants that live/replay legality, the replay objective, and
- * illegal-batch handling must keep, which the earlier suites only exercised
- * indirectly through end-to-end runs.
- */
-
 function tree(seed = 3) {
   return syntheticTree({
     seed,
@@ -46,13 +38,13 @@ describe("live/replay legality parity", () => {
     await env.probeBatch([ROOT_ID]);
     const revealedBranches = new Set([...env.observed().values()].map((o) => o.branch));
     expect(new Set(env.openedBranches())).toEqual(revealedBranches);
-    // Never leaks a branch that has no revealed node.
+
     for (const b of env.openedBranches()) expect(revealedBranches.has(b)).toBe(true);
   });
 
   it("rejects a batch larger than maxParallelism", async () => {
     const env = new ReplayEnv(tree(), { maxRounds: 6 });
-    // probeBatch is async, so the illegal batch surfaces as a rejection.
+
     await expect(env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID])).rejects.toThrow(
       IllegalBatchError
     );
@@ -74,8 +66,7 @@ describe("live/replay legality parity", () => {
     const leaf = env.legalActions().filter((id) => id !== ROOT_ID)[0]!;
     const before = env.rounds;
     await env.probeBatch([leaf]);
-    // The leaf has a recorded child, so this reveals it; either way a round
-    // is consumed and the batch recorded.
+
     expect(env.rounds).toBe(before + 1);
     expect(env.batchesTaken().at(-1)).toEqual([leaf]);
   });
@@ -108,7 +99,7 @@ describe("replay objective", () => {
     };
     const sequential = computeScore({ ...base, batchSizes: [1, 1, 1] });
     const wide = computeScore({ ...base, batchSizes: [3] });
-    // Sequential uses one round; wide uses the same node count in one batch.
+
     expect(wide.penalty).toBeCloseTo(0.2, 12);
     expect(sequential.penalty).toBeCloseTo(0, 12);
   });
@@ -152,9 +143,6 @@ describe("scripted end-to-end replay", () => {
 
     class Greedy implements ExplorationPolicy {
       async solve(env: ExplorationEnv): Promise<void> {
-        // Open every root child first so the dominant branch is visible,
-        // then repeatedly refine the best-scoring leaf. This is the whole
-        // point of the objective: spend the budget where the score is.
         while (env.roundsRemaining > 0 && env.legalRoots() > 0) {
           await env.probeBatch([ROOT_ID]);
         }
@@ -180,7 +168,7 @@ describe("scripted end-to-end replay", () => {
     }).score;
 
     const fixed = new ReplayEnv(t, { maxRounds: 6 });
-    // A shallow fixed policy: open every root child then stop.
+
     await fixed.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID]);
     const fixedScore = computeScore({
       baselineScore: t.baselineScore,

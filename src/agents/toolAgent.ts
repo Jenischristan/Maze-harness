@@ -20,32 +20,29 @@ import type { BudgetLimits } from "../util/limits.js";
 
 export interface ToolAgentConfig {
   provider: ChatProvider;
-  /** Permission policy; defaults to the safe built-in policy. */
+
   permission?: PermissionPolicy;
-  /** Verification commands (tests/typecheck/lint) run after edits. */
+
   verifyCommands?: string[];
-  /** Where JSONL sessions are stored. Defaults to `<runsDir>/_sessions`. */
+
   runsDir: string;
-  /** Max agent turns per attempt. */
+
   maxTurns?: number;
-  /** Extra instructions appended to the system prompt. */
+
   instructions?: string;
-  /** Optional named model routing for exploration. */
+
   explorationModel?: string;
-  /** Subscribe to events for UI streaming. */
+
   onEvent?: (event: AgentEvent) => void;
-  /** Context window override. */
+
   contextWindow?: number;
-  /** Per-tool output byte budget. */
+
   maxOutputBytes?: number;
-  /** Abort signal. */
+
   signal?: AbortSignal;
-  /** Discover MCP tools for the attempt workspace (default true). */
+
   enableMcp?: boolean;
-  /**
-   * Hard limits beyond `maxTurns` (tokens, wall-clock, USD, tool calls). A
-   * task that exceeds one stops cleanly instead of running unbounded.
-   */
+
   budget?: BudgetLimits;
 }
 
@@ -93,14 +90,9 @@ function renderUserPrompt(context: AgentContext): string {
   return lines.join("\n");
 }
 
-/**
- * Native tool-calling discovery agent. Uses the OpenAI-compatible provider,
- * built-in tools, permission policy, verification hooks, compaction, session
- * persistence, and cost tracking.
- */
 export class ToolAgent implements DiscoveryAgent {
   private readonly cfg: ToolAgentConfig;
-  /** Lazily built per attempt: MCP config/skills live in the worktree. */
+
   private registry: ToolRegistry | null = null;
 
   constructor(cfg: ToolAgentConfig) {
@@ -131,10 +123,7 @@ export class ToolAgent implements DiscoveryAgent {
       model: this.cfg.provider.model,
       explorationModel: this.cfg.explorationModel
     });
-    // Build the full toolset inside the attempt worktree: MCP servers and
-    // skills are discovered there, and `delegate` becomes available to the
-    // discovery agent. Build it *before* the executor so the executor sees
-    // the complete registry.
+
     const toolset: AgentToolset = await buildAgentToolset({
       workspaceDir,
       model: this.cfg.provider.model,

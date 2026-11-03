@@ -36,7 +36,7 @@ cost tracking.
                           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Coding harness                                                       │
-│   agent loop · OpenAI-compatible provider · tools · sessions ·       │
+│   agent loop · native provider (3 wire protocols) · tools · sessions │
 │   compaction · permissions · hooks · cost · sub-agents · MCP · skills│
 └──────────────────────────────────────────────────────────────────────┘
 ```

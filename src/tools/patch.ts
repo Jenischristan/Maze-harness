@@ -1,35 +1,21 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { resolveInside } from "./paths.js";
 import { writeFileAtomic } from "../util/atomic.js";
 
-/**
- * Multi-file, transactional patch primitive.
- *
- * `edit` changes one file per call, so a refactor across eight files is eight
- * calls that can each fail independently and leave the tree half-mutated.
- * `apply_patch` validates **every** hunk against the current contents first,
- * then writes all files; if any hunk is invalid, nothing is written.
- *
- * Format is the familiar `*** Begin Patch` / `*** Update File:` / `@@` block,
- * with exact-match context lines (no line-number arithmetic, so a hunk cannot
- * land in the wrong place after an earlier edit shifted lines).
- */
-
 interface Hunk {
-  /** Literal text to replace. */
   oldText: string;
-  /** Replacement text. */
+
   newText: string;
 }
 
 interface FilePatch {
   path: string;
   hunks: Hunk[];
-  /** Create the file when it does not exist (empty oldText only). */
+
   create?: boolean;
-  /** Delete the file entirely. */
+
   delete?: boolean;
 }
 
@@ -43,13 +29,6 @@ function hash(text: string): string {
   return createHash("sha1").update(text).digest("hex");
 }
 
-/**
- * Parse the patch language. Lines starting with `***` are directives; a `@@`
- * line starts a hunk and the hunk body is taken literally until the next
- * `***`/`@@` directive. Prefix characters are **not** used to add/remove
- * lines: the format is exact-match, which is what the `edit` tool already
- * enforces and what the model is good at producing.
- */
 export function parsePatch(input: string): FilePatch[] {
   const lines = input.split("\n");
   const files: FilePatch[] = [];
@@ -110,18 +89,21 @@ export function parsePatch(input: string): FilePatch[] {
       current = { path, hunks: [], delete: true };
       continue;
     }
-    if (trimmed.startsWith("***")) {
-      throw new PatchParseError(`unknown patch directive: ${trimmed.slice(0, 60)}`);
-    }
     if (trimmed === "@@") {
       flushHunk();
       hunkLines = [];
       continue;
     }
+    // Hunk bodies (including the `***NEW***` separator) are raw content, so
+    // they must be handled before the directive guard below.
     if (hunkLines !== null) {
       hunkLines.push(line);
-    } else if (current?.create) {
-      // Add File body is everything until the next directive.
+      continue;
+    }
+    if (trimmed.startsWith("***")) {
+      throw new PatchParseError(`unknown patch directive: ${trimmed.slice(0, 60)}`);
+    }
+    if (current?.create) {
       current.hunks[0]!.newText = current.hunks[0]!.newText
         ? `${current.hunks[0]!.newText}\n${line}`
         : line;
@@ -137,7 +119,6 @@ export function parsePatch(input: string): FilePatch[] {
   return files;
 }
 
-/** Apply one file's hunks against its current contents, or throw. */
 export function applyFilePatch(original: string, patch: FilePatch): string {
   if (patch.delete) return "";
   if (patch.create) {
@@ -179,7 +160,7 @@ export const applyPatchTool: ToolDefinition = {
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), "bad-patch");
     }
-    // Phase 1: resolve, read and validate every file. Nothing is written yet.
+
     const planned: Array<{
       path: string;
       full: string;
@@ -226,20 +207,24 @@ export const applyPatchTool: ToolDefinition = {
       }
       planned.push({ path: file.path, full, original, next, delete: file.delete });
     }
-    // Phase 2: commit. A write failure rolls back the files already written.
+
     const written: Array<{ full: string; original: string; deleted: boolean }> = [];
     try {
       for (const item of planned) {
         if (item.delete) {
-          await writeFileAtomic(item.full, "", "utf8");
+          // A delete must remove the file, not leave an empty one behind.
+          await rm(item.full, { force: true });
           written.push({ full: item.full, original: item.original, deleted: true });
         } else {
           await writeFileAtomic(item.full, item.next, "utf8");
           written.push({ full: item.full, original: item.original, deleted: false });
         }
         ctx.modifiedFiles.add(item.full);
-        ctx.readHashes?.set(item.full, hash(item.next));
-        ctx.readFiles.add(item.full);
+        ctx.readHashes?.delete(item.full);
+        if (!item.delete) {
+          ctx.readHashes?.set(item.full, hash(item.next));
+          ctx.readFiles.add(item.full);
+        }
       }
     } catch (err) {
       for (const undo of written.reverse()) {
@@ -247,7 +232,7 @@ export const applyPatchTool: ToolDefinition = {
           await writeFileAtomic(undo.full, undo.original, "utf8");
           ctx.readHashes?.set(undo.full, hash(undo.original));
         } catch {
-          // Best-effort rollback; the original error is what matters.
+          void 0;
         }
       }
       return fail(

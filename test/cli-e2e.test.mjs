@@ -1,12 +1,6 @@
 #!/usr/bin/env node
-/**
- * End-to-end CLI test as a real subprocess.
- *
- * Everything else in `test/` drives modules and loops through fakes. This
- * script is the only check that the actual `dist/cli.js` builds, parses flags,
- * starts a run against the bundled toy task, writes state, and exits cleanly.
- * It is run by `pnpm test:cli` (and by CI after `pnpm build`).
- */
+
+
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -112,7 +106,7 @@ try {
       "--runs-dir", runsDir
     ]);
     if (res.status !== 0) throw new Error(`exit ${res.status}\n${res.stderr}`);
-    // Nothing left to run: the run already completed its requested round.
+
     const before = readFileSync(join(runsDir, "e2e", "state.json"), "utf8");
     if (!/"round": 1/.test(before)) throw new Error(`unexpected state: ${before.slice(0, 200)}`);
   });

@@ -44,9 +44,7 @@ async function runOne(
       kill();
     };
     signal?.addEventListener("abort", onAbort, { once: true });
-    // Bound retained bytes by trimming *before* measuring, and redact
-    // credentials a failing test may have printed. `slice` counts UTF-16
-    // code units, so the byte cap is applied to the encoded prefix.
+
     const cap = (s: string): string => {
       const text = redact(s);
       if (Buffer.byteLength(text) <= opts.maxOutputBytes) return text;
@@ -56,8 +54,7 @@ async function runOne(
       timedOut = true;
       kill();
     }, hook.timeoutMs ?? opts.timeoutMs);
-    // StringDecoder-backed collection: a chunk split inside a multi-byte
-    // UTF-8 sequence must not become U+FFFD in the hook output.
+
     const outSink = collectText(child.stdout, { cap: opts.maxOutputBytes });
     const errSink = collectText(child.stderr, { cap: opts.maxOutputBytes });
     const settle = (): void => signal?.removeEventListener("abort", onAbort);
@@ -112,7 +109,6 @@ export class Hooks implements HookRegistry {
   }
 }
 
-/** Parse `--verify "npm run lint"` style strings into hooks. */
 export function verifyCommandsToHooks(commands: string[]): VerifyHook[] {
   return commands
     .map((c) => c.trim())

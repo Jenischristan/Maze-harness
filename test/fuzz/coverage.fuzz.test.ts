@@ -1,8 +1,3 @@
-/**
- * Fuzz + integration coverage for modules that had no direct suite:
- *   src/chat-render.ts, src/developer/fake.ts, src/agents/toolAgent.ts,
- *   src/policies/sandboxRunner.ts (via sandbox + offline), src/loop/offline.ts.
- */
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +13,6 @@ import { syntheticTree } from "../synthetic.js";
 import type { AgentEvent } from "../../src/agent/loop.js";
 import type { ReplayReport } from "../../src/types.js";
 import { fuzzCases } from "./harness.js";
-
-/* ------------------------------------------------------------------ */
-/* chat-render                                                         */
-/* ------------------------------------------------------------------ */
 
 describe("fuzz: chat-render", () => {
   let out = "";
@@ -87,10 +78,6 @@ describe("fuzz: chat-render", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* developer/fake                                                      */
-/* ------------------------------------------------------------------ */
-
 describe("fuzz: FakePolicyDeveloper", () => {
   it(
     "cycles variants, records calls, and returns the source when empty",
@@ -114,10 +101,6 @@ describe("fuzz: FakePolicyDeveloper", () => {
     })
   );
 });
-
-/* ------------------------------------------------------------------ */
-/* ToolAgent                                                           */
-/* ------------------------------------------------------------------ */
 
 describe("integration: ToolAgent", () => {
   let dir = "";
@@ -186,10 +169,6 @@ describe("integration: ToolAgent", () => {
   );
 });
 
-/* ------------------------------------------------------------------ */
-/* offline phase (sandbox runner path)                                 */
-/* ------------------------------------------------------------------ */
-
 const POLICY_OK = `
 export default class Policy {
   constructor(cfg) { this.beta = cfg.beta ?? 0; }
@@ -212,9 +191,7 @@ describe("integration: offline phase", () => {
 
   it(
     "compiles a policy, evaluates every tree, and selects a version",
-    // The default vitest timeout is 30s and this case spawns one sandbox child
-    // per (tree, beta) — 8 processes plus two compiles. Give it headroom so a
-    // loaded machine does not turn a correct result into a timeout.
+
     { timeout: 120_000 },
     fuzzCases({ seed: 0xf04, runs: 1, maxRuns: 1 }, async (rng) => {
       const trees = Array.from({ length: rng.int(1, 2) }, (_, i) =>

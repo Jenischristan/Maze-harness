@@ -162,7 +162,8 @@ Creates an isolated worktree. `--repo <dir>`, `--ref <ref>` (default `root`),
 
 ## Environment
 
-Precedence is **flag > environment > default**; there is no config file.
+Precedence is **flag > environment > project config file > built-in default**.
+The file is `maze.json` (also `opencode.json`, `.maze.json`, or `$MAZE_CONFIG`).
 
 | Variable               | Purpose                                  |
 | ---------------------- | ---------------------------------------- |

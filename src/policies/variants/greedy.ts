@@ -1,15 +1,3 @@
-/**
- * Greedy prefix policy.
- *
- * Rules:
- * - Open up to `maxParallelism` branches immediately, then keep refining the
- *   leaf whose branch has the highest observed score.
- * - Classify the current frontier from the observable prefix only:
- *   exploit the best anchor, explore a shallow underexplored branch, and allow
- *   at most one recovery probe on a repairable failure per batch.
- * - Stop when no leaf can plausibly beat the best revealed score, when every
- *   failure is hard-unrecoverable, or when the budget runs out.
- */
 const ROOT = "root";
 
 export default class GreedyPrefixPolicy {

@@ -36,10 +36,10 @@ export async function readRun(dir: string, runId: string): Promise<RunSummary | 
   } catch {
     return null;
   }
-  // Prefer the mode the run recorded; older state files have no `mode`, so
-  // fall back to the name prefix. An explicit `--run-id` need not carry the
-  // prefix, so name-based detection alone silently dropped those runs from
-  // `report` even though their state existed.
+  
+  
+  
+  
   const mode: "dream" | "fixed" =
     state.mode === "dream" || state.mode === "fixed"
       ? state.mode
@@ -67,8 +67,8 @@ export async function listRuns(dir: string): Promise<RunSummary[]> {
     return [];
   }
   const runs: RunSummary[] = [];
-  // Discover by the presence of `state.json`, not by a name prefix: `--run-id`
-  // accepts any identifier, and filtering on `dream-`/`fixed-` hid those runs.
+  
+  
   for (const entry of entries.sort()) {
     if (!existsSync(join(dir, entry, "state.json"))) continue;
     const run = await readRun(dir, entry);

@@ -1,7 +1,3 @@
-/**
- * Fuzz tests for filesystem and text primitives:
- *   src/tools/paths.ts, src/tools/truncate.ts, src/tools/permissions.ts
- */
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";

@@ -8,13 +8,6 @@ import { runCli } from "../agents/cli.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/**
- * Locate the default developer prompt.
- *
- * Source runs find it at `<repo>/prompts/policy-developer.md`. The bundled
- * `dist/cli.js` sits one level below the package root, so resolve the package
- * root and read `<root>/prompts/policy-developer.md`.
- */
 function defaultPromptPath(): string {
   const direct = join(here, "..", "..", "prompts", "policy-developer.md");
   if (existsSync(direct)) return direct;
@@ -73,9 +66,6 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
     const notesPath = join(dir, "feedback.md");
     await writeFile(policyPath, input.currentPolicySource, "utf8");
 
-    // Use the real replay worlds and the objective selection used, so the
-    // developer sees true baselines, deltas, penalties and bonuses. Only fall
-    // back to synthesized trees when a caller does not supply them.
     const trees = input.trees ?? summarizeReportsForFeedback(input.replayReports);
     const scoreConfig = input.scoreConfig ?? {
       beta1: 0.002,
@@ -111,12 +101,6 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
   }
 }
 
-/**
- * Fallback only: reconstruct minimal worlds when the caller does not hand over
- * the real trees. `report.best` is a normalized best score, never the tree's
- * baseline, so this cannot recover the true baseline. Callers that have the
- * trees (`runOfflinePhase`) must pass them.
- */
 function summarizeReportsForFeedback(
   reports: ReplayReport[]
 ): import("../types.js").DiscoveryTree[] {

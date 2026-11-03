@@ -1,9 +1,8 @@
 type PermissionAction = "allow" | "ask" | "deny";
 
 interface PermissionRule {
-  /** Tool name or "*" for any tool. */
   tool: string;
-  /** Optional command/path pattern (regex source) matched against the primary arg. */
+
   pattern?: string;
   action: PermissionAction;
 }
@@ -11,42 +10,141 @@ interface PermissionRule {
 export interface PermissionPolicy {
   rules: PermissionRule[];
   defaultAction: PermissionAction;
-  /** Called when a rule resolves to "ask". Return true to allow. */
+
   ask?: (input: {
     tool: string;
     pattern: string;
     args: Record<string, unknown>;
   }) => Promise<boolean>;
-  /** Allowlisted network hosts. Empty means no network access. */
+
   networkAllowlist?: string[];
-  /** Whether network access is permitted at all. */
+
   networkEnabled?: boolean;
 }
 
-/**
- * Default policy. Mutating tools default to `ask`, so a policy that never
- * wired an `ask` handler denies rather than silently allowing. Read-only
- * tools stay allowed.
- *
- * The deny list is defense-in-depth only — it is a handful of regexes and is
- * trivially bypassed by construction, so it must never be relied on as the
- * security boundary.
- */
+export function splitCommands(command: string): string[][] {
+  const out: string[][] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  const flush = (): void => {
+    const trimmed = cur.trim();
+    if (trimmed) out.push(tokenizeSimple(trimmed));
+    cur = "";
+  };
+  for (let i = 0; i < command.length; i += 1) {
+    const c = command[i]!;
+    if (quote) {
+      cur += c;
+      if (c === quote && command[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === ";" || c === "\n") {
+      flush();
+      continue;
+    }
+    if ((c === "&" || c === "|") && command[i + 1] === c) {
+      flush();
+      i += 1;
+      continue;
+    }
+    if (c === "|") {
+      flush();
+      continue;
+    }
+    cur += c;
+  }
+  flush();
+  return out;
+}
+
+export function tokenizeSimple(text: string): string[] {
+  const tokens: string[] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  let has = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i]!;
+    if (quote) {
+      if (c === quote) {
+        quote = null;
+      } else {
+        cur += c;
+      }
+      has = true;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      has = true;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (has) {
+        tokens.push(cur);
+        cur = "";
+        has = false;
+      }
+      continue;
+    }
+    cur += c;
+    has = true;
+  }
+  if (has) tokens.push(cur);
+
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i]!;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i += 1;
+      continue;
+    }
+    if (t === "env" || t === "command" || t === "exec" || t === "nohup") {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return tokens.slice(i);
+}
+
+const SAFE_TOOLS = new Set(["read", "grep", "glob", "ls", "page", "todo", "question", "lsp"]);
+
+const NEVER_ALLOW: Array<{ tool: string; re: RegExp; label: string }> = [
+  {
+    tool: "bash",
+    re: /^rm\b(?=.*(?:^|\s)-\S*r)(?=.*(?:^|\s)-\S*f)(?=.*\s\/)/,
+    label: "recursive force delete of an absolute path"
+  },
+
+  {
+    tool: "bash",
+    re: /^(mkfs(\.[a-z0-9]+)?|mke2fs|wipefs|fdisk|parted)\b/,
+    label: "filesystem tool"
+  },
+  { tool: "bash", re: /^dd\b.*\bof=\/dev\//, label: "raw device write" },
+  { tool: "bash", re: /^(shutdown|reboot|halt|poweroff)\b/, label: "system power control" },
+
+  { tool: "bash", re: /^(sudo|doas|pkexec|su)\b/, label: "privilege escalation" },
+
+  { tool: "bash", re: /:\s*\(\s*\)\s*\{.*\}\s*;?\s*:/, label: "fork bomb" },
+  { tool: "bash", re: /\b(curl|wget)\b.*\|\s*(ba)?sh\b/, label: "pipe download to shell" }
+];
+
+const ASK: Array<{ tool: string; re: RegExp; label: string }> = [
+  { tool: "bash", re: /^git\s+clean\b.*\s-\S*f/, label: "git clean with force" },
+  { tool: "bash", re: /^git\s+push\b/, label: "git push" },
+  { tool: "bash", re: /^(curl|wget|nc|ncat|ssh|scp|rsync)\b/, label: "network command" },
+  { tool: "bash", re: /^rm\b.*\s-\S*r/, label: "recursive delete" }
+];
+
 export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
   defaultAction: "ask",
-  rules: [
-    { tool: "read", action: "allow" },
-    { tool: "grep", action: "allow" },
-    { tool: "glob", action: "allow" },
-    { tool: "page", action: "allow" },
-    { tool: "bash", pattern: "rm\\s+-rf\\s+/", action: "deny" },
-    { tool: "bash", pattern: "(?:^|[\\s;&|])(?:doas|pkexec|su\\s+-c|sudo)\\b", action: "deny" },
-    { tool: "bash", pattern: ":\\s*\\(\\)\\s*\\{", action: "deny" },
-    { tool: "bash", pattern: "mkfs|dd\\s+if=|shutdown|reboot", action: "deny" },
-    { tool: "bash", pattern: "git\\s+clean\\s+-[a-z]*f", action: "ask" },
-    { tool: "bash", pattern: "git\\s+push", action: "ask" },
-    { tool: "bash", pattern: "curl|wget|\\bnc\\s|\\bssh\\s", action: "ask" }
-  ]
+  rules: []
 };
 
 export interface PermissionDecision {
@@ -62,44 +160,78 @@ function primaryArg(args: Record<string, unknown>): string {
   return JSON.stringify(args);
 }
 
+function basename(command: string): string {
+  const idx = Math.max(command.lastIndexOf("/"), command.lastIndexOf("\\"));
+  return idx >= 0 ? command.slice(idx + 1) : command;
+}
+
+// Rewrite the leading token to its basename so `/usr/bin/sudo ls` and
+// `./rm -rf /` are matched by rules anchored with `^`, exactly like `sudo ls`.
+function normalizeSegment(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  const out = [...tokens];
+  out[0] = basename(out[0]!);
+  return out;
+}
+
+function bashDecision(command: string): { action: PermissionAction; reason: string } | null {
+  const simple = splitCommands(command);
+  if (simple.length === 0) return null;
+  const segments = simple.map(normalizeSegment);
+  // Shell wrappers that are followed by another program (`sh -c ...`,
+  // `bash script.sh`) must keep their original name: normalizing the lead
+  // token would rewrite the wrapper's argument, not just a path prefix.
+  for (const tokens of segments) {
+    const wrapper = tokens[0] ?? "";
+    if (/^(?:ba|da|z|k)?sh$/.test(wrapper)) {
+      for (const rule of NEVER_ALLOW) {
+        if (rule.re.test(command)) return { action: "deny", reason: rule.label };
+      }
+    }
+  }
+  // The whole raw command is also checked so cross-segment patterns
+  // (e.g. `curl ... | sh`) see the pipeline that splitCommands removed.
+  const haystacks = [...segments.map((tokens) => tokens.join(" ")), command];
+  for (const haystack of haystacks) {
+    for (const rule of NEVER_ALLOW) {
+      if (rule.re.test(haystack)) return { action: "deny", reason: rule.label };
+    }
+  }
+  for (const haystack of haystacks) {
+    for (const rule of ASK) {
+      if (rule.re.test(haystack)) return { action: "ask", reason: rule.label };
+    }
+  }
+  return null;
+}
+
 export async function decide(
   policy: PermissionPolicy,
   tool: string,
   args: Record<string, unknown>
 ): Promise<PermissionDecision> {
   const subject = primaryArg(args);
+  const finish = async (action: PermissionAction, reason: string): Promise<PermissionDecision> => {
+    if (action !== "ask") return { action, reason };
+    if (!policy.ask) return { action: "deny", reason: `${reason} (no approval handler)` };
+    const ok = await policy.ask({ tool, pattern: subject, args });
+    return { action: ok ? "allow" : "deny", reason };
+  };
+
+  if (tool === "bash" && typeof args.command === "string") {
+    const structural = bashDecision(args.command);
+    if (structural) return finish(structural.action, structural.reason);
+  }
   for (const rule of policy.rules) {
     if (rule.tool !== "*" && rule.tool !== tool) continue;
-    if (rule.pattern) {
-      if (!patternMatches(rule.pattern, subject)) continue;
-    }
+    if (rule.pattern && !patternMatches(rule.pattern, subject)) continue;
     const label = `rule ${rule.tool}${rule.pattern ? `:${rule.pattern}` : ""}`;
-    if (rule.action === "ask") {
-      if (!policy.ask) return { action: "deny", reason: `${label} (no approval handler)` };
-      const ok = await policy.ask({ tool, pattern: subject, args });
-      return { action: ok ? "allow" : "deny", reason: label };
-    }
-    return { action: rule.action, reason: label };
+    return finish(rule.action, label);
   }
-  if (policy.defaultAction === "ask") {
-    // No handler wired: fail closed. An `ask` that silently allows would make
-    // the whole permission layer advisory.
-    if (!policy.ask) return { action: "deny", reason: "default ask (no approval handler)" };
-    const ok = await policy.ask({ tool, pattern: subject, args });
-    return { action: ok ? "allow" : "deny", reason: "default ask" };
-  }
-  return { action: policy.defaultAction, reason: "default" };
+  if (SAFE_TOOLS.has(tool)) return { action: "allow", reason: "read-only tool" };
+  return finish(policy.defaultAction, policy.defaultAction === "ask" ? "default ask" : "default");
 }
 
-/**
- * Match a rule pattern against a subject.
- *
- * Patterns are user-supplied and were previously compiled and run verbatim, so
- * a catastrophic-backtracking pattern (e.g. `(a+)+$`) against a long `bash`
- * command could stall every permission decision. `safeRegExpTest` bounds the
- * work; an over-long subject is matched on a truncated prefix so the bound is
- * meaningful rather than `O(n)` per pattern.
- */
 const MAX_SUBJECT_CHARS = 4096;
 
 function patternMatches(pattern: string, subject: string): boolean {
@@ -107,15 +239,6 @@ function patternMatches(pattern: string, subject: string): boolean {
   return safeRegExpTest(pattern, input, "i");
 }
 
-/**
- * Time-bounded regex test.
- *
- * Node cannot interrupt a synchronous regex, so this cannot hard-cap a single
- * `test()` call. It does two things that matter in practice: (1) it validates
- * the pattern once so a malformed rule is skipped rather than throwing, and
- * (2) it runs the test on a bounded input, which is what actually keeps a
- * backtracking pattern from consuming the whole command line.
- */
 function safeRegExpTest(pattern: string, input: string, flags: string): boolean {
   let re: RegExp;
   try {
@@ -141,4 +264,12 @@ export function networkAllowed(policy: PermissionPolicy, url: string): boolean {
     return false;
   }
   return allow.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
+
+export function applyPermissionMap(
+  base: PermissionPolicy,
+  map: Record<string, "allow" | "ask" | "deny">
+): PermissionPolicy {
+  const rules = Object.entries(map).map(([tool, action]) => ({ tool, action }));
+  return { ...base, rules: [...rules, ...base.rules] };
 }

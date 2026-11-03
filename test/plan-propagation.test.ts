@@ -11,23 +11,6 @@ import { ROOT_ID } from "../src/tree.js";
 import type { ExplorationPolicy } from "../src/types.js";
 import { syntheticTree } from "./synthetic.js";
 
-/**
- * Regression tests for the plan-propagation audit finding.
- *
- * The paper says "the runtime grid is the hard bound" and that a requested plan
- * beyond the frozen trace's width/depth "is out of support and cannot earn
- * replay reward". The runner therefore hands the resolved `GridPlan` to the
- * policy, but two things were broken:
- *
- *   1. `FixedParallelRefine.planGrid` stored the plan on `this`, which is lost
- *      in the replay sandbox (it constructs a fresh instance per tree and never
- *      calls `planGrid`), so the plan never bounded replay.
- *   2. The import-free variant (the actual seed policy) had no plan support at
- *      all, so the live plan was only enforced by `LiveEnv.validateBatch`.
- *
- * Both now read `config.plan`, and the sandbox forwards it.
- */
-
 let tmp = "";
 
 beforeEach(async () => {
@@ -159,7 +142,7 @@ describe("sandbox forwards the plan to the policy constructor", () => {
     expect(narrow.failed).toBe(false);
     expect(wide.failed).toBe(false);
     expect(narrow.report.n).toBeLessThan(wide.report.n);
-    // Width 1 / depth 1 can reveal at most one root child and one refinement.
+
     expect(narrow.report.revealed.length).toBeLessThanOrEqual(2);
     expect(narrow.report.batches.every((b) => b.length <= 1)).toBe(true);
     for (const obs of narrow.report.revealed) expect(obs.attempt).toBeLessThanOrEqual(1);
@@ -168,8 +151,6 @@ describe("sandbox forwards the plan to the policy constructor", () => {
 
 describe("live and replay agree on the plan", () => {
   it("replaying a recorded live batch list under the plan is unchanged", async () => {
-    // Sanity: a plan-restricted policy's own batches are still legal in a
-    // fresh replay of the same world with the same plan.
     const t = tree();
     const plan = { branchCount: 2, refineCount: 2 };
     const original = new ReplayEnv(t, { maxRounds: 8 });

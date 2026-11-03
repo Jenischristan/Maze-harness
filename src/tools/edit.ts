@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { resolveInside } from "./paths.js";
 import { writeFileAtomic } from "../util/atomic.js";
+import { findFuzzy } from "./fuzzy-match.js";
 
 function hash(text: string): string {
   return createHash("sha1").update(text).digest("hex");
@@ -17,11 +18,6 @@ function fail(message: string, error: string): ToolResult {
   return { callId: "", name: "edit", ok: false, content: message, error };
 }
 
-/**
- * Exact-match replacement. Each oldText must appear exactly once in the file and
- * edits must not overlap. Fails loudly if the file changed since it was read or
- * was never read. All edits are matched against the original content.
- */
 export const editTool: ToolDefinition = {
   name: "edit",
   description:
@@ -69,24 +65,38 @@ export const editTool: ToolDefinition = {
         "read-error"
       );
     }
-    // Stale-file guard: if the file changed on disk since the agent read it
-    // (another tool, bash, an external editor), refuse. Checking only
-    // "was it read" lets a stale edit silently apply to different content.
+
     const seen = ctx.readHashes?.get(full);
     if (seen !== undefined && seen !== hash(original)) {
       return fail(`refusing to edit ${path}: file changed since it was read`, "stale-file");
     }
-    // CRLF files are common; the model emits LF. If a direct match fails and
-    // the file is CRLF, retry against an LF-normalized view and re-apply CRLF
-    // on write. Offsets stay aligned because we only normalize after a miss.
+
     const crlf = original.includes("\r\n");
     const normalized = crlf ? original.replace(/\r\n/g, "\n") : original;
-    const matchText = (needle: string): { idx: number; text: string } => {
+    const matchText = (
+      needle: string
+    ): { idx: number; end: number; text: string; strategy: string } => {
       const direct = original.indexOf(needle);
-      if (direct !== -1 || !crlf || needle.includes("\r\n")) {
-        return { idx: direct, text: original };
+      if (direct !== -1) {
+        return { idx: direct, end: direct + needle.length, text: original, strategy: "exact" };
       }
-      return { idx: normalized.indexOf(needle), text: normalized };
+      if (crlf && !needle.includes("\r\n")) {
+        const n = normalized.indexOf(needle);
+        if (n !== -1) {
+          return { idx: n, end: n + needle.length, text: normalized, strategy: "exact" };
+        }
+      }
+
+      const fuzzy = findFuzzy(normalized, needle);
+      if (fuzzy.match) {
+        return {
+          idx: fuzzy.match.start,
+          end: fuzzy.match.end,
+          text: normalized,
+          strategy: fuzzy.match.strategy
+        };
+      }
+      return { idx: -1, end: -1, text: normalized, strategy: "none" };
     };
     const spans: Array<{ start: number; end: number; base: string }> = [];
     for (const [i, op] of edits.entries()) {
@@ -100,13 +110,15 @@ export const editTool: ToolDefinition = {
           "oldText-not-found"
         );
       }
-      const second = m.text.indexOf(op.oldText, m.idx + 1);
+
+      const matched = m.text.slice(m.idx, m.end);
+      const second = m.text.indexOf(matched, m.idx + matched.length);
       if (second !== -1) {
         return fail(`edit[${i}] oldText is not unique in ${path}`, "oldText-not-unique");
       }
-      spans.push({ start: m.idx, end: m.idx + op.oldText.length, base: m.text });
+      spans.push({ start: m.idx, end: m.end, base: m.text });
     }
-    // All matches must be against the same view (either raw or LF-normalized).
+
     if (spans.some((s) => s.base !== spans[0]!.base)) {
       return fail("edits matched different line-ending views; split the edit", "mixed-endings");
     }
@@ -127,12 +139,20 @@ export const editTool: ToolDefinition = {
       pos = span.end;
     }
     out += base.slice(pos);
-    // A match against the LF-normalized view must be written back as CRLF so
-    // the file keeps its original line endings.
+
     if (base !== original) out = out.replace(/\n/g, "\r\n");
+    if (args.dryRun) {
+      // Planning mode (used by multiedit): compute the result without touching
+      // the file so a later failure can abort the whole batch.
+      return {
+        callId: "",
+        name: "edit",
+        ok: true,
+        content: `dry-run: would apply ${edits.length} edit(s) to ${path}`,
+        data: { path: full, edits: edits.length, next: out }
+      };
+    }
     try {
-      // Atomic + mode-preserving: a crash mid-write must not truncate the file,
-      // and rewriting an executable script must keep its `+x` bit.
       await writeFileAtomic(full, out, "utf8");
     } catch (err) {
       return fail(

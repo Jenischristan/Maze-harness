@@ -26,13 +26,13 @@ SOLUTION = os.path.join(WORKSPACE, "solution.py")
 CASES = [
     ("factor_small", "factorize", 360, [2, 2, 2, 3, 3, 5], 1.0, 5),
     ("factor_medium", "factorize", 600851475143, [71, 839, 1471, 6857], 2.0, 5),
-    ("factor_semiprime_19", "factorize", 1000000000000000003, None, 6.0, 8),
-    ("factor_semiprime_23", "factorize", 9007199254740881, None, 8.0, 10),
+    ("factor_semiprime_19", "factorize", 1000000000000000003, [1000000000000000003], 6.0, 8),
+    ("factor_semiprime_23", "factorize", 9007199254740881, [9007199254740881], 8.0, 10),
     ("totient_medium", "totient", 1000000007, 1000000006, 1.0, 5),
-    ("totient_large", "totient", 56130437228687557907788, None, 6.0, 10),
+    ("totient_large", "totient", 56130437228687557907788, 28052674355797540771728, 6.0, 10),
     ("gap_1e5", "largest_prime_gap", 100000, 72, 1.0, 5),
     ("gap_1e6", "largest_prime_gap", 1000000, 114, 3.0, 8),
-    ("gap_5e6", "largest_prime_gap", 5000000, 132, 8.0, 15),
+    ("gap_5e6", "largest_prime_gap", 5000000, 154, 8.0, 15),
 ]
 
 RUNNER = r"""

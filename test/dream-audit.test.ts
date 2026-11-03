@@ -7,22 +7,6 @@ import { planGridForRound, type CycleHistory } from "../src/loop/dream.js";
 import type { DiscoveryNode, ExplorationPolicy, Observation } from "../src/types.js";
 import { syntheticTree } from "./synthetic.js";
 
-/**
- * Regression tests for the documentation-to-code audit of the Dream-RSI core.
- *
- * Each case pins a defect found by comparing the README / paper Appendix B.2
- * against the implementation:
- *
- *   1. `deltaVsParent`/`improvedVsParent` for a root child must be measured
- *      against the root (the baseline), not silently `null`.
- *   2. The documented opt-in rho budget terms must actually be applied.
- *   3. `meanScoreOverGrid` must vary across the rho grid it is handed.
- *   4. Feedback components must include the lambda width penalty, so the
- *      developer sees the objective selection actually used.
- *   5. A recordless replay world must reject a root probe instead of counting
- *      a no-op round that can never reveal anything.
- */
-
 function rootChild(score: number | null): DiscoveryNode {
   return {
     id: "b0a0",
@@ -47,7 +31,7 @@ describe("audit: root-child parent delta", () => {
     const obs = toObservation(rootChild(1.5), 1, null);
     expect(obs.deltaVsParent).toBeCloseTo(0.5, 12);
     expect(obs.improvedVsParent).toBe(true);
-    // A root child below the baseline is not an improvement over the root.
+
     const worse = toObservation(rootChild(0.5), 1, null);
     expect(worse.deltaVsParent).toBeCloseTo(-0.5, 12);
     expect(worse.improvedVsParent).toBe(false);
@@ -157,7 +141,7 @@ describe("audit: feedback components match the selection objective", () => {
       normalize: "none",
       lambda: 5
     });
-    // Two batches of width 2 waste one slot each: W = 2, so lambda*W = 10.
+
     expect(noLambda.components.penalty).toBeCloseTo(0, 12);
     expect(withLambda.components.penalty).toBeCloseTo(10, 12);
     expect(
@@ -227,9 +211,7 @@ describe("audit: next-cycle grid planning reads the real plan history", () => {
   it("passes the planned grid, rounds and beta of each completed cycle", async () => {
     let seen: import("../src/types.js").GridPlanningContext | null = null;
     const policy: ExplorationPolicy = {
-      async solve() {
-        /* not exercised by planGridForRound */
-      },
+      async solve() {},
       planGrid(context) {
         seen = context;
         return { branchCount: 2, refineCount: 1, reason: "echo" };
@@ -253,7 +235,7 @@ describe("audit: next-cycle grid planning reads the real plan history", () => {
     expect(seen).not.toBeNull();
     const ctx = seen as unknown as import("../src/types.js").GridPlanningContext;
     expect(ctx.history).toHaveLength(2);
-    // Must be the per-cycle plan, not the runner's global caps.
+
     expect(ctx.history[0]!.plannedBranchCount).toBe(3);
     expect(ctx.history[0]!.plannedRefineCount).toBe(2);
     expect(ctx.history[0]!.rounds).toBe(4);
@@ -266,9 +248,7 @@ describe("audit: next-cycle grid planning reads the real plan history", () => {
 
   it("still returns a clamped policy plan and the bootstrap fallback when needed", async () => {
     const throwing: ExplorationPolicy = {
-      async solve() {
-        /* no-op */
-      },
+      async solve() {},
       planGrid() {
         throw new Error("boom");
       }
@@ -285,9 +265,7 @@ describe("audit: next-cycle grid planning reads the real plan history", () => {
     expect(fallback.plan.refineCount).toBe(2);
 
     const overreaching: ExplorationPolicy = {
-      async solve() {
-        /* no-op */
-      },
+      async solve() {},
       planGrid() {
         return { branchCount: 99, refineCount: 99, reason: "too big" };
       }
@@ -327,7 +305,6 @@ describe("audit: end-to-end multi-round runDream", () => {
         agentTimeoutMs: 20000
       };
 
-      // Record every GridPlanningContext the real loop hands the policy.
       const seen: Array<import("../src/types.js").GridPlanningContext> = [];
       const source = `
         export default class P {
@@ -346,8 +323,7 @@ describe("audit: end-to-end multi-round runDream", () => {
       `;
 
       const { runOfflinePhase } = await import("../src/loop/offline.js");
-      // Keep the offline phase cheap but real: no beta sweep, no developer
-      // revisions, so only the current policy is compiled and replayed.
+
       void runOfflinePhase;
 
       const result = await runDream({
@@ -381,12 +357,9 @@ describe("audit: end-to-end multi-round runDream", () => {
       });
 
       expect(result.rounds).toHaveLength(2);
-      // Round 1 bootstrap (no history), round 2 policy.
+
       expect(seen).toHaveLength(2);
 
-      // Read back the persisted live manifest: round 1's planned grid must be
-      // the real plan, and round 1's beta must be recorded, so round 2's
-      // planner can see them.
       const { loadLiveManifests } = await import("../src/loop/manifest.js");
       const manifests = await loadLiveManifests(join(dir, "e2e", "reports"));
       expect(manifests).toHaveLength(2);

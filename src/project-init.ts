@@ -9,15 +9,6 @@ export interface InitResult {
   root: string;
 }
 
-/**
- * `/init` writes scaffolding only — memory, MCP config, skills, `.gitignore`.
- *
- * It deliberately writes **no** `.dream/config.json`: configuration is flags +
- * environment only (see `src/config.ts`), so a persisted defaults file would be
- * a second source of truth that nothing reads. Earlier versions wrote one and
- * committed it; both are gone.
- */
-
 const MEMORY_TEMPLATE = `# Project memory
 
 Loaded into every agent session. Keep it short and concrete.
@@ -34,17 +25,11 @@ Loaded into every agent session. Keep it short and concrete.
 - \`runs/\` is generated; do not edit it.
 `;
 
-// The template ships with an EMPTY server map on purpose. An earlier template
-// declared a `_example` server, which `/init` then wrote to disk; on the next
-// start the harness connected it and tried to spawn `npx` (network + an
-// external package). A scaffold must never start processes on its own, so the
-// commented shape is documented here instead of being a live entry.
 const MCP_TEMPLATE = `{
   "mcpServers": {}
 }
 `;
-// JSON has no comments, and appending "#" lines to mcp.json would make it
-// unparseable, so the usage note lives in its own markdown file next to it.
+
 const MCP_README = `# MCP servers
 
 Add servers under \`mcpServers\` in \`mcp.json\`, for example:
@@ -85,18 +70,6 @@ dist/
 *.log
 `;
 
-/**
- * `/init` — create the initial Dream-RSI project scaffolding in `root`
- * without overwriting anything that already exists.
- *
- * Layout mirrors what the harness reads at runtime:
- *   .dream/memory.md     project memory (also seeds AGENTS.md)
- *   .dream/mcp.json      MCP server definitions
- *   .dream/skills/…      skill catalogue
- *
- * There is no `config.json`: runtime configuration comes from flags and
- * environment variables only.
- */
 export async function initProject(
   root: string,
   opts: { force?: boolean } = {}
@@ -125,6 +98,4 @@ export async function initProject(
   return { created, skipped, root: base };
 }
 
-// Keep the score defaults reachable for callers that build a config from
-// scratch; exported so the CLI can mirror the loop's objective exactly.
 export { DEFAULT_SCORE_CONFIG };
