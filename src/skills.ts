@@ -13,12 +13,7 @@ export interface Skill {
   allowedTools?: string[];
 }
 
-const SKILL_DIRS = [
-  ".dream/skills",
-  ".claude/skills",
-  ".agents/skills",
-  "skills"
-];
+const SKILL_DIRS = [".dream/skills", ".claude/skills", ".agents/skills", "skills"];
 
 interface Frontmatter {
   name?: string;
@@ -46,7 +41,7 @@ function parseFrontmatter(raw: string): { meta: Frontmatter; body: string } {
     let value = m[2]!.trim();
     if (
       (value.startsWith("[") && value.endsWith("]")) ||
-      (value.startsWith("\"") && value.endsWith("\""))
+      (value.startsWith('"') && value.endsWith('"'))
     ) {
       if (value.startsWith("[")) {
         value = value.slice(1, -1);
@@ -61,7 +56,10 @@ function parseFrontmatter(raw: string): { meta: Frontmatter; body: string } {
     if (key === "name") meta.name = value;
     else if (key === "description") meta.description = value;
     else if (key === "allowed-tools" || key === "allowedtools") {
-      meta.allowedTools = value.split(",").map((s) => s.trim()).filter(Boolean);
+      meta.allowedTools = value
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     }
   }
   return { meta, body: body.trim() };
@@ -76,7 +74,7 @@ function loadFrom(raw: string, path: string): Skill | null {
   const base = path.split(/[\\/]/).pop() ?? "skill";
   const fallback =
     /^skill\.md$/i.test(base) || !/\.md$/i.test(base)
-      ? dirname(path).split(/[\\/]/).pop() ?? "skill"
+      ? (dirname(path).split(/[\\/]/).pop() ?? "skill")
       : base.replace(/\.md$/i, "");
   return {
     name: meta.name ?? fallback,

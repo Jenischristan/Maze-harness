@@ -15,9 +15,12 @@ import {
   resetShells
 } from "../src/tools/index.js";
 import { Hooks } from "../src/tools/hooks.js";
-import { decide, DEFAULT_PERMISSION_POLICY } from "../src/tools/permissions.js";
+import {
+  decide,
+  DEFAULT_PERMISSION_POLICY,
+  type PermissionPolicy
+} from "../src/tools/permissions.js";
 import { truncateOutput, getPage } from "../src/tools/truncate.js";
-import type { PermissionPolicy } from "../src/tools/permissions.js";
 import type { ToolContext } from "../src/types.js";
 
 let dir = "";

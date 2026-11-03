@@ -4,6 +4,8 @@ import type { ToolDefinition, ToolResult } from "../types.js";
 import { decide } from "./permissions.js";
 import { truncateOutput } from "./truncate.js";
 import { collectText } from "../util/stream.js";
+import { taskChildEnv } from "../util/env.js";
+import { redact } from "../util/redact.js";
 
 /**
  * A persistent shell session.
@@ -161,7 +163,12 @@ function getSession(workspaceDir: string, id: string, shell: string): ShellSessi
 
   const child = spawn(shell, [], {
     cwd: workspaceDir,
-    env: { ...process.env, PS1: "", PS2: "", PROMPT_COMMAND: "", HISTFILE: "/dev/null" },
+    env: taskChildEnv(process.env, {
+      PS1: "",
+      PS2: "",
+      PROMPT_COMMAND: "",
+      HISTFILE: "/dev/null"
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     // Own process group: a one-shot command's process-group kill must not
     // reach the long-lived session shell.
@@ -251,7 +258,12 @@ async function runPersistent(
   signal?: AbortSignal
 ): Promise<{ output: string; timedOut: boolean; aborted: boolean; exitCode: number | null }> {
   if (!session.alive) {
-    return { output: "shell session is no longer alive", timedOut: false, aborted: false, exitCode: null };
+    return {
+      output: "shell session is no longer alive",
+      timedOut: false,
+      aborted: false,
+      exitCode: null
+    };
   }
   if (signal?.aborted) {
     return { output: "aborted before execution", timedOut: false, aborted: true, exitCode: null };
@@ -261,10 +273,18 @@ async function runPersistent(
   session.stdout = "";
   session.exitReason = null;
 
-  return new Promise<{ output: string; timedOut: boolean; aborted: boolean; exitCode: number | null }>((resolve) => {
+  return new Promise<{
+    output: string;
+    timedOut: boolean;
+    aborted: boolean;
+    exitCode: number | null;
+  }>((resolve) => {
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
     let aborted = false;
+    // Declared up front because `finish`/`removeWaiter` close over it, then
+    // assigned exactly once below the callbacks are defined.
+    // eslint-disable-next-line prefer-const
+    let timer: NodeJS.Timeout | undefined;
 
     /**
      * Settle this command. `onlyIfOurs` is false for the timeout path, where
@@ -387,7 +407,15 @@ export const bashTool: ToolDefinition = {
     const started = Date.now();
 
     if (!persistent) {
-      return runOneShot(command, ctx.workspaceDir, shell, timeoutMs, started, ctx.maxOutputBytes, ctx.signal);
+      return runOneShot(
+        command,
+        ctx.workspaceDir,
+        shell,
+        timeoutMs,
+        started,
+        ctx.maxOutputBytes,
+        ctx.signal
+      );
     }
 
     const key = `${ctx.workspaceDir}::${sessionId}`;
@@ -399,7 +427,10 @@ export const bashTool: ToolDefinition = {
       const live = getSession(ctx.workspaceDir, sessionId, shell);
       return runPersistent(live, command, timeoutMs, ctx.signal).then((r) => ({ r, live }));
     });
-    queues.set(key, run.catch(() => undefined));
+    queues.set(
+      key,
+      run.catch(() => undefined)
+    );
     const { r: result, live } = await run;
 
     if (result.timedOut || result.aborted) {
@@ -423,7 +454,9 @@ export const bashTool: ToolDefinition = {
       .replace(/\n{3,}/g, "\n\n")
       .trimEnd();
 
-    const t = truncateOutput(cleaned, ctx.maxOutputBytes, "tail");
+    // Redact secrets before truncation so a credential split across the cut
+    // point is never half-persisted and later reassembled by the model.
+    const t = truncateOutput(redact(cleaned), ctx.maxOutputBytes, "tail");
     // A non-zero exit status is a command failure, the same as the one-shot
     // path: report it in `error` so callers and the model can see it, while
     // still returning the output the command produced.
@@ -441,7 +474,13 @@ export const bashTool: ToolDefinition = {
       truncated: t.truncated
         ? { keptBytes: t.keptBytes, droppedBytes: t.droppedBytes, pageToken: t.pageToken }
         : undefined,
-      error: result.aborted ? "aborted" : result.timedOut ? "timeout" : failed ? `exit ${exitCode}` : undefined,
+      error: result.aborted
+        ? "aborted"
+        : result.timedOut
+          ? "timeout"
+          : failed
+            ? `exit ${exitCode}`
+            : undefined,
       data: { wallMs: Date.now() - started, persistent: true, exitCode }
     };
   }
@@ -471,7 +510,9 @@ function runOneShot(
     }
     const child = spawn(shell, ["-lc", command], {
       cwd,
-      env: process.env,
+      // A model-issued command is untrusted: it must not be able to read
+      // provider credentials out of `env`. Keep PATH/HOME/locale only.
+      env: taskChildEnv(process.env),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true
     });
@@ -500,12 +541,18 @@ function runOneShot(
     child.on("error", (err) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve({ callId: "", name: "bash", ok: false, content: `spawn failed: ${err.message}`, error: err.message });
+      resolve({
+        callId: "",
+        name: "bash",
+        ok: false,
+        content: `spawn failed: ${err.message}`,
+        error: err.message
+      });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      const t = truncateOutput(`${outSink.flush()}${errSink.flush()}`, maxBytes, "tail");
+      const t = truncateOutput(redact(`${outSink.flush()}${errSink.flush()}`), maxBytes, "tail");
       resolve({
         callId: "",
         name: "bash",

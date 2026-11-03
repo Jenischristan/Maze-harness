@@ -51,9 +51,7 @@ export function syntheticTree(opts: SyntheticTreeOptions): DiscoveryTree {
     for (let a = 0; a < opts.refinements; a += 1) {
       const failed = rnd() < failRate;
       const failureClass = failed
-        ? (["compile", "runtime", "timeout", "incorrect"] as const)[
-            Math.floor(rnd() * 4)
-          ]!
+        ? (["compile", "runtime", "timeout", "incorrect"] as const)[Math.floor(rnd() * 4)]!
         : "ok";
       const step = (rnd() - 0.25) * noise;
       const rawScore = failed ? null : branchBase + a * 0.05 + step;

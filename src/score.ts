@@ -1,8 +1,4 @@
-import type {
-  DiscoveryTree,
-  ReplayReport,
-  ReplayScoreConfig
-} from "./types.js";
+import type { DiscoveryTree, ReplayReport, ReplayScoreConfig } from "./types.js";
 import type { ReplayEnv } from "./env/replay.js";
 
 export const DEFAULT_SCORE_CONFIG: ReplayScoreConfig = {
@@ -35,11 +31,7 @@ export interface ScoreComponents {
   score: number;
 }
 
-function normalizeScore(
-  s: number,
-  baseline: number,
-  mode: ReplayScoreConfig["normalize"]
-): number {
+function normalizeScore(s: number, baseline: number, mode: ReplayScoreConfig["normalize"]): number {
   if (mode === "none") return s;
   const denom = Math.max(Math.abs(baseline), 1);
   return (s - baseline) / denom;
@@ -203,7 +195,11 @@ export function meanScore(reports: ReadonlyArray<ReplayReport>): number {
   return sum / reports.length;
 }
 
-function scoreReport(report: ReplayReport, config: ReplayScoreConfig, baseline: number): ScoreComponents {
+function scoreReport(
+  report: ReplayReport,
+  config: ReplayScoreConfig,
+  baseline: number
+): ScoreComponents {
   const comp = computeScore({
     baselineScore: baseline,
     revealedScores: report.revealed.map((o) => o.score),
@@ -262,7 +258,13 @@ export interface BetaSweepResult {
  * number of probes it spent.
  */
 export function betaSweepFromCells(
-  cells: ReadonlyArray<{ beta: number; attainment: number; probes: number; rounds: number; parallelPenalty: number }>,
+  cells: ReadonlyArray<{
+    beta: number;
+    attainment: number;
+    probes: number;
+    rounds: number;
+    parallelPenalty: number;
+  }>,
   lambda = 0
 ): BetaSweepResult {
   const ordered = [...cells].sort((a, b) => a.probes - b.probes || a.beta - b.beta);

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { collectText } from "../util/stream.js";
+import { taskChildEnv } from "../util/env.js";
 import { mkdir, rm, cp, appendFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -14,13 +15,15 @@ export async function git(args: string[], cwd: string): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", args, {
       cwd,
-      env: {
-        ...process.env,
+      // git hooks and credential helpers run inside the workspace repo, so
+      // they must not see provider keys. PATH/HOME are enough for git itself.
+      env: taskChildEnv(process.env, {
         GIT_AUTHOR_NAME: "dream-harness",
         GIT_AUTHOR_EMAIL: "harness@localhost",
         GIT_COMMITTER_NAME: "dream-harness",
-        GIT_COMMITTER_EMAIL: "harness@localhost"
-      },
+        GIT_COMMITTER_EMAIL: "harness@localhost",
+        GIT_TERMINAL_PROMPT: "0"
+      }),
       stdio: ["ignore", "pipe", "pipe"]
     });
     // Every external call needs a deadline: a hung `git` (network fs, hooks,

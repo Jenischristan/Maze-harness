@@ -2,7 +2,15 @@ import { mkdir, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "../util/atomic.js";
+import { CURRENT_SCHEMA, migrate, registerUpcaster, SchemaVersionError } from "../util/schema.js";
 import type { DiscoveryTree } from "../types.js";
+
+// v1 -> v2: manifests written before the schema field used `version: 1` and no
+// `schema`. Nothing else changed, so the upcaster only has to drop the old key.
+registerUpcaster("live-manifest", 1, (record) => {
+  const { version: _legacy, ...rest } = record as { version?: unknown };
+  return rest;
+});
 
 /**
  * Per-iteration live-cycle sidecar, mirroring the paper's
@@ -13,7 +21,8 @@ import type { DiscoveryTree } from "../types.js";
  * outcomes.
  */
 export interface LiveCycleManifest {
-  version: 1;
+  /** Record schema; see `util/schema.ts`. */
+  schema: number;
   runId: string;
   round: number;
   treeIndex: number;
@@ -66,7 +75,10 @@ export function manifestPath(dir: string, round: number): string {
 /** Persist one live cycle's manifest (and refresh `_current`). */
 export async function saveLiveManifest(dir: string, manifest: LiveCycleManifest): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFileAtomic(manifestPath(dir, manifest.round), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFileAtomic(
+    manifestPath(dir, manifest.round),
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
   await writeFileAtomic(join(dir, "_current"), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
@@ -79,9 +91,14 @@ export async function loadLiveManifests(dir: string): Promise<LiveCycleManifest[
   const out: LiveCycleManifest[] = [];
   for (const file of files) {
     try {
-      out.push(JSON.parse(await readFile(join(dir, file), "utf8")) as LiveCycleManifest);
-    } catch {
-      // A truncated manifest must not break the loop; skip it.
+      const raw = JSON.parse(await readFile(join(dir, file), "utf8")) as Record<string, unknown>;
+      // Files written before the schema field carry no version; `migrate`
+      // treats a missing version as v1 and upgrades it.
+      out.push(migrate("live-manifest", raw) as unknown as LiveCycleManifest);
+    } catch (err) {
+      // A truncated manifest must not break the loop, but a *newer* schema is a
+      // real incompatibility and must be surfaced rather than silently skipped.
+      if (err instanceof SchemaVersionError) throw err;
     }
   }
   return out.sort((a, b) => a.round - b.round);
@@ -93,14 +110,17 @@ export async function loadBetaSweep(
   round: number,
   policyId: string
 ): Promise<BetaSweepPoint[] | null> {
-  const path = join(
-    dir,
-    `t${String(round).padStart(4, "0")}-${policyId}-beta_sweep.json`
-  );
+  const path = join(dir, `t${String(round).padStart(4, "0")}-${policyId}-beta_sweep.json`);
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(await readFile(path, "utf8")) as {
-      cells?: Array<{ beta: number; reward: number; attainment: number; probes: number; parallelPenalty: number }>;
+      cells?: Array<{
+        beta: number;
+        reward: number;
+        attainment: number;
+        probes: number;
+        parallelPenalty: number;
+      }>;
       auc?: number;
       parallelPenalty?: number;
     };
@@ -227,10 +247,7 @@ function bestAt(sweep: ReadonlyArray<BetaSweepPoint>, beta: number): number {
   ).paretoReward;
 }
 
-function bestNearby(
-  sweep: ReadonlyArray<BetaSweepPoint>,
-  beta: number
-): BetaSweepPoint | null {
+function bestNearby(sweep: ReadonlyArray<BetaSweepPoint>, beta: number): BetaSweepPoint | null {
   const nearby = sweep.filter((p) => Math.abs(p.beta - beta) <= BETA_STEP + 1e-9);
   if (nearby.length === 0) return null;
   return nearby.reduce((best, p) => (p.paretoReward > best.paretoReward ? p : best));
@@ -266,7 +283,7 @@ export function manifestFromTree(opts: {
     if (node.score !== null && (best === null || node.score > best)) best = node.score;
   }
   return {
-    version: 1,
+    schema: CURRENT_SCHEMA,
     runId: opts.runId,
     round: opts.round,
     treeIndex: opts.tree.treeIndex,

@@ -97,7 +97,10 @@ describe("fuzz: verification hooks", () => {
     fuzzCases({ seed: 0xe04, runs: 25, maxRuns: 25 }, async (rng) => {
       const code = rng.int(0, 1);
       const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 64 });
-      hooks.register({ name: "h", command: `bash -c 'printf "%s" "${"x".repeat(rng.int(0, 200))}"; exit ${code}'` });
+      hooks.register({
+        name: "h",
+        command: `bash -c 'printf "%s" "${"x".repeat(rng.int(0, 200))}"; exit ${code}'`
+      });
       const [res] = await hooks.runAll();
       expect(res!.name).toBe("h");
       expect(res!.ok).toBe(code === 0);
@@ -147,19 +150,24 @@ describe("fuzz: atomic file writes", () => {
     "appendLineSafe recovers from a torn trailing line",
     fuzzCases({ seed: 0xe06, runs: 40 }, async (rng) => {
       const path = join(dir, "log.jsonl");
-      const lines = Array.from({ length: rng.int(0, 5) }, () => JSON.stringify({ i: rng.int(0, 99) }));
+      const lines = Array.from({ length: rng.int(0, 5) }, () =>
+        JSON.stringify({ i: rng.int(0, 99) })
+      );
       for (const l of lines) await appendLineSafe(path, l);
       if (rng.bool()) await writeFile(path, (await readFile(path, "utf8")) + "{torn");
       await appendLineSafe(path, JSON.stringify({ i: "tail" }));
       const raw = await readFile(path, "utf8");
       expect(raw.endsWith("\n")).toBe(true);
-      const parsed = raw.split("\n").filter(Boolean).map((l) => {
-        try {
-          return JSON.parse(l) as unknown;
-        } catch {
-          return null;
-        }
-      });
+      const parsed = raw
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l) as unknown;
+          } catch {
+            return null;
+          }
+        });
       expect(parsed.at(-1)).toEqual({ i: "tail" });
       expect(parsed.filter((p) => p !== null).length).toBeGreaterThanOrEqual(lines.length);
     })

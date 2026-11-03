@@ -3,12 +3,7 @@ import { existsSync } from "node:fs";
 import { collectText } from "../util/stream.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import type {
-  DiscoveryTree,
-  ReplayReport,
-  ReplayScoreConfig,
-  TreeSummary
-} from "../types.js";
+import type { DiscoveryTree, ReplayReport, ReplayScoreConfig, TreeSummary } from "../types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -113,6 +108,8 @@ export interface SandboxConfig {
   scoreConfig: ReplayScoreConfig;
   /** Policy beta knob passed to the constructor; defaults to the policy's own. */
   beta?: number;
+  /** Effective grid plan handed to the policy constructor, when known. */
+  plan?: { branchCount: number; refineCount: number };
   /** Per-tree replay round cap K2; defaults to the tree's recorded limit. */
   maxRounds?: number;
 }
@@ -176,7 +173,12 @@ function execRunner(
     const errSink = collectText(child.stderr);
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve({ code: -1, stdout: outSink.flush(), stderr: errSink.flush() + String(err), timedOut });
+      resolve({
+        code: -1,
+        stdout: outSink.flush(),
+        stderr: errSink.flush() + String(err),
+        timedOut
+      });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -200,6 +202,7 @@ export async function runPolicyInSandbox(opts: {
     policyId: opts.policyId,
     scoreConfig: opts.config.scoreConfig,
     beta: opts.config.beta ?? null,
+    plan: opts.config.plan ?? null,
     maxRounds: opts.config.maxRounds ?? null
   });
   const started = Date.now();
@@ -207,7 +210,12 @@ export async function runPolicyInSandbox(opts: {
   const wallMs = Date.now() - started;
   if (res.timedOut) {
     return {
-      report: failedReport(opts.tree, opts.policyId, `sandbox timed out after ${opts.config.timeoutMs}ms`, wallMs),
+      report: failedReport(
+        opts.tree,
+        opts.policyId,
+        `sandbox timed out after ${opts.config.timeoutMs}ms`,
+        wallMs
+      ),
       failed: true,
       reason: "timeout"
     };

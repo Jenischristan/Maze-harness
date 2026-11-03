@@ -212,10 +212,7 @@ describe("beta sweep and pareto.reward", () => {
   it("the sandbox hands beta to the policy constructor", async () => {
     // Two policies with the same source but different beta must produce
     // different work when the policy routes beta through its schedule.
-    const source = await readFile(
-      join(process.cwd(), "src/policies/variants/fixed.ts"),
-      "utf8"
-    );
+    const source = await readFile(join(process.cwd(), "src/policies/variants/fixed.ts"), "utf8");
     const compiled = await compilePolicy({
       source,
       outDir: join(tmp, "build"),
@@ -264,10 +261,7 @@ describe("plan_grid", () => {
     expect(typedPlan.refineCount).toBeGreaterThanOrEqual(0);
     expect(typedPlan.reason.length).toBeGreaterThan(0);
 
-    const source = await readFile(
-      join(process.cwd(), "src/policies/variants/fixed.ts"),
-      "utf8"
-    );
+    const source = await readFile(join(process.cwd(), "src/policies/variants/fixed.ts"), "utf8");
     const compiled = await compilePolicy({
       source,
       outDir: join(tmp, "build"),
@@ -343,7 +337,7 @@ describe("plan_grid", () => {
 describe("live manifests and the default-beta rule", () => {
   function manifest(over: Partial<LiveCycleManifest> = {}): LiveCycleManifest {
     return {
-      version: 1,
+      schema: 2,
       runId: "r",
       round: 1,
       treeIndex: 0,

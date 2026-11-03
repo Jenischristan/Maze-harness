@@ -52,7 +52,10 @@ describe("fuzz: chat-render", () => {
     fuzzCases({ seed: 0xf01, runs: 80 }, (rng) => {
       const events: AgentEvent[] = [
         { type: "assistant", content: rng.str(40), toolCalls: [] },
-        { type: "tool-start", calls: [{ id: "1", name: "bash", arguments: { command: rng.str(30) } }] },
+        {
+          type: "tool-start",
+          calls: [{ id: "1", name: "bash", arguments: { command: rng.str(30) } }]
+        },
         {
           type: "tool-result",
           result: { callId: "1", name: "read", ok: rng.bool(), content: rng.str(50) }
@@ -76,7 +79,10 @@ describe("fuzz: chat-render", () => {
   });
 
   it("summarizes the first useful argument", () => {
-    printEvent({ type: "tool-start", calls: [{ id: "1", name: "bash", arguments: { command: "echo hi" } }] });
+    printEvent({
+      type: "tool-start",
+      calls: [{ id: "1", name: "bash", arguments: { command: "echo hi" } }]
+    });
     expect(out).toContain("echo hi");
   });
 });
@@ -220,7 +226,11 @@ describe("integration: offline phase", () => {
           roundsLimit: 4
         })
       );
-      const compiled = await compilePolicy({ source: POLICY_OK, outDir: join(dir, "pol"), policyId: "p" });
+      const compiled = await compilePolicy({
+        source: POLICY_OK,
+        outDir: join(dir, "pol"),
+        policyId: "p"
+      });
       expect(compiled.ok).toBe(true);
       expect(compiled.error).toBeNull();
       const bundlePath = compiled.bundlePath!;

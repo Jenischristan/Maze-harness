@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { OpenAICompatProvider } from "./agent/provider.js";
 import type { ChatResult } from "./types.js";
 import { runAgentLoop, type AgentEvent } from "./agent/loop.js";
-import { ToolExecutor, ToolRegistry } from "./tools/index.js";
+import { ToolExecutor, type ToolRegistry } from "./tools/index.js";
 import { Hooks, verifyCommandsToHooks } from "./tools/hooks.js";
 import { DEFAULT_PERMISSION_POLICY, type PermissionPolicy } from "./tools/permissions.js";
 import { SessionStore } from "./session/store.js";
@@ -13,6 +13,7 @@ import { buildSystemPrompt } from "./agent/prompts.js";
 import { formatHookFeedback } from "./agent/verify.js";
 import { buildAgentToolset, skillsPrompt, type AgentToolset } from "./registry.js";
 import { printEvent } from "./chat-render.js";
+import type { BudgetLimits } from "./util/limits.js";
 
 export interface ChatOnceOptions {
   message: string;
@@ -24,6 +25,8 @@ export interface ChatOnceOptions {
   runsDir: string;
   verifyCommands: string[];
   permission: string;
+  /** Optional hard token/wall/USD/tool-call ceilings for the task. */
+  budget?: BudgetLimits;
 }
 
 function permissionPolicy(mode: string): PermissionPolicy {
@@ -105,6 +108,7 @@ export async function runChatOnce(opts: ChatOnceOptions): Promise<void> {
       maxTurns: opts.maxTurns,
       compaction: { ...DEFAULT_COMPACTION, contextWindow: opts.contextWindow },
       cost: built.cost,
+      budget: opts.budget,
       onEvent: (event) => {
         printEvent(event);
         if (event.type === "hooks") {
@@ -120,6 +124,8 @@ export async function runChatOnce(opts: ChatOnceOptions): Promise<void> {
   process.stdout.write(
     `\n[session ${built.session.path}] stop=${result.stopReason} turns=${result.turns} tokens=${usage.totalTokens} $${usage.usd.toFixed(4)}\n`
   );
+  // A budget stop is an expected, reportable outcome (like max-turns), not a
+  // crash: exit non-zero so CI can tell it apart, without a stack trace.
   if (result.stopReason === "error" || result.stopReason === "loop") process.exitCode = 1;
+  if (result.stopReason === "budget") process.exitCode = 3;
 }
-

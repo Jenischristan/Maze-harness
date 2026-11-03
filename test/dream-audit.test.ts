@@ -136,7 +136,10 @@ describe("audit: feedback components match the selection objective", () => {
       n: 4,
       k: 2,
       maxParallelism: 2,
-      batches: [["root", "root"], ["b0a0", "b1a0"]],
+      batches: [
+        ["root", "root"],
+        ["b0a0", "b1a0"]
+      ],
       revealed: [] as Observation[],
       error: null,
       illegal: false,
@@ -356,7 +359,11 @@ describe("audit: end-to-end multi-round runDream", () => {
           command: task.evaluatorCommand,
           timeoutMs: task.evaluatorTimeoutMs
         }),
-        developer: { async revise() { return source; } },
+        developer: {
+          async revise() {
+            return source;
+          }
+        },
         seedPolicy: { policyId: "fixed", source },
         rounds: 2,
         revisions: 0,

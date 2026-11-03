@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { collectText } from "../util/stream.js";
+import { taskChildEnv } from "../util/env.js";
+import { redact } from "../util/redact.js";
 import type { HookRegistry, HookResult, VerifyHook } from "./hookTypes.js";
 
 export type { HookResult, VerifyHook } from "./hookTypes.js";
@@ -26,7 +28,7 @@ async function runOne(
     const child = spawn(hook.command, [], {
       cwd: opts.workspaceDir,
       shell: true,
-      env: { ...process.env, ...(hook.env ?? {}) },
+      env: taskChildEnv(process.env, hook.env),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true
     });
@@ -42,10 +44,14 @@ async function runOne(
       kill();
     };
     signal?.addEventListener("abort", onAbort, { once: true });
-    const cap = (s: string): string =>
-      Buffer.byteLength(s) > opts.maxOutputBytes
-        ? `${s.slice(0, opts.maxOutputBytes)}\n[truncated]`
-        : s;
+    // Bound retained bytes by trimming *before* measuring, and redact
+    // credentials a failing test may have printed. `slice` counts UTF-16
+    // code units, so the byte cap is applied to the encoded prefix.
+    const cap = (s: string): string => {
+      const text = redact(s);
+      if (Buffer.byteLength(text) <= opts.maxOutputBytes) return text;
+      return `${text.slice(0, opts.maxOutputBytes)}\n[truncated]`;
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       kill();

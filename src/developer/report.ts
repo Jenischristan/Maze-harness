@@ -1,10 +1,5 @@
 import { computeScore } from "../score.js";
-import type {
-  DiscoveryTree,
-  FeedbackReport,
-  ReplayReport,
-  ReplayScoreConfig
-} from "../types.js";
+import type { DiscoveryTree, FeedbackReport, ReplayReport, ReplayScoreConfig } from "../types.js";
 
 export function buildFeedbackReport(
   tree: DiscoveryTree,

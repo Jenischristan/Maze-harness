@@ -14,8 +14,15 @@ import {
   compact,
   type CompactionConfig
 } from "../context/compaction.js";
-import { CostTracker } from "../cost.js";
+import type { CostTracker } from "../cost.js";
 import type { SessionStore } from "../session/store.js";
+import {
+  Budget,
+  describeBudgetExceeded,
+  type BudgetLimits,
+  type BudgetState
+} from "../util/limits.js";
+import { getLogger } from "../util/logger.js";
 
 export type AgentEvent =
   | { type: "assistant"; content: string; toolCalls: ToolCall[] }
@@ -43,13 +50,27 @@ export interface AgentLoopConfig {
   signal?: AbortSignal;
   /** Stop if the same tool batch repeats this many turns in a row. */
   loopTurnLimit?: number;
+  /**
+   * Hard limits beyond `maxTurns`. Checked before every turn and after every
+   * provider response, so a task cannot overshoot its token, wall-clock or
+   * USD budget by a whole turn.
+   */
+  budget?: BudgetLimits;
+  /**
+   * Calls `fn` with the workspace state before every mutating turn and returns
+   * an undo handle. Used to make each turn atomic: when the turn fails, the
+   * caller restores the snapshot instead of leaving a half-mutated tree.
+   */
+  beginTurn?: () => Promise<() => Promise<void>>;
 }
 
 export interface AgentLoopResult {
   messages: ChatMessage[];
-  stopReason: "done" | "max-turns" | "loop" | "error" | "aborted";
+  stopReason: "done" | "max-turns" | "loop" | "error" | "aborted" | "budget";
   error?: string;
   turns: number;
+  /** Budget state at exit, for accounting. */
+  budget?: BudgetState;
 }
 
 /**
@@ -62,21 +83,48 @@ export async function runAgentLoop(
   cfg: AgentLoopConfig,
   userMessage: string
 ): Promise<AgentLoopResult> {
+  const log = getLogger("agent.loop", { model: cfg.provider.model });
   const emit = (e: AgentEvent): void => {
     cfg.onEvent?.(e);
   };
   await cfg.session.appendMessage({ role: "user", content: userMessage });
 
+  const budget = new Budget({ ...cfg.budget, maxTurns: cfg.maxTurns });
   let turns = 0;
   let lastSignature = "";
   let repeated = 0;
   const loopLimit = cfg.loopTurnLimit ?? 5;
+  const stopForBudget = (): AgentLoopResult => {
+    const exceeded = budget.check();
+    const message = exceeded ? describeBudgetExceeded(exceeded) : "budget exceeded";
+    // The turn limit keeps its long-standing `max-turns` stop reason; only the
+    // new token/wall/USD/tool-call limits report `budget`.
+    const stopReason: AgentLoopResult["stopReason"] =
+      exceeded?.kind === "turns" ? "max-turns" : "budget";
+    log.warn("budget stop", {
+      kind: exceeded?.kind,
+      limit: exceeded?.limit,
+      used: exceeded?.used,
+      turns
+    });
+    emit({ type: "error", message });
+    return {
+      messages: cfg.session.projection(),
+      stopReason,
+      error: message,
+      turns,
+      budget: budget.used
+    };
+  };
 
   while (turns < cfg.maxTurns) {
     if (cfg.signal?.aborted) {
       return { messages: cfg.session.projection(), stopReason: "aborted", turns };
     }
+    // Check the token/wall/USD budget before spending another turn.
+    if (budget.check()) return stopForBudget();
     turns += 1;
+    budget.turn();
     cfg.onTurn?.(turns);
 
     const system: ChatMessage = { role: "system", content: cfg.systemPrompt };
@@ -121,6 +169,13 @@ export async function runAgentLoop(
     }
 
     const usage = cfg.cost.record(response.usage);
+    // Charge the budget with the turn's tokens and estimated cost before the
+    // next iteration can start, so an expensive response cannot be followed by
+    // one more unaffordable turn.
+    budget.spend(
+      response.usage.totalTokens || response.usage.promptTokens + response.usage.completionTokens,
+      usage.usd ?? 0
+    );
     await cfg.session.recordUsage({
       promptTokens: response.usage.promptTokens,
       completionTokens: response.usage.completionTokens,
@@ -167,17 +222,45 @@ export async function runAgentLoop(
     // Forward the turn's abort signal so pressing esc kills in-flight tool
     // subprocesses instead of waiting out the tool's own timeout.
     cfg.executor.setSignal(cfg.signal);
-    const batch = await cfg.executor.runBatch(
-      assistant.toolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }))
-    );
+    // Snapshot before a mutating batch so a failed turn can be rewound instead
+    // of leaving the workspace half-mutated.
+    const undo = cfg.beginTurn ? await cfg.beginTurn().catch(() => null) : null;
+    let batch: Awaited<ReturnType<ToolExecutor["runBatch"]>>;
+    try {
+      batch = await cfg.executor.runBatch(
+        assistant.toolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }))
+      );
+    } catch (err) {
+      if (undo) await undo().catch(() => undefined);
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("tool batch failed; turn rewound", { turn: turns, error: message });
+      emit({ type: "error", message: `tool batch failed: ${message}` });
+      return {
+        messages: cfg.session.projection(),
+        stopReason: "error",
+        error: message,
+        turns,
+        budget: budget.used
+      };
+    }
+    budget.toolCalls(batch.results.length);
     for (const result of batch.results) {
       await cfg.session.appendToolResult(result);
       emit({ type: "tool-result", result });
     }
     if (batch.hookResults.length > 0) emit({ type: "hooks", results: batch.hookResults });
+    // A verification failure is recoverable feedback, not a reason to rewind;
+    // the agent gets the output and another turn. A hard abort does rewind.
+    if (cfg.signal?.aborted && undo) await undo().catch(() => undefined);
+    if (budget.check()) return stopForBudget();
   }
 
-  return { messages: cfg.session.projection(), stopReason: "max-turns", turns };
+  return {
+    messages: cfg.session.projection(),
+    stopReason: "max-turns",
+    turns,
+    budget: budget.used
+  };
 }
 
 export function contextUsage(

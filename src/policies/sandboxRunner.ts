@@ -1,6 +1,12 @@
 import { ReplayEnv } from "../env/replay.js";
 import { scoreReplay } from "../score.js";
-import type { DiscoveryTree, ExplorationPolicy, ReplayReport, ReplayScoreConfig, TreeSummary } from "../types.js";
+import type {
+  DiscoveryTree,
+  ExplorationPolicy,
+  ReplayReport,
+  ReplayScoreConfig,
+  TreeSummary
+} from "../types.js";
 
 interface Payload {
   bundlePath: string;
@@ -10,6 +16,8 @@ interface Payload {
   scoreConfig: ReplayScoreConfig;
   /** Beta knob handed to the policy constructor, or null for its default. */
   beta: number | null;
+  /** Effective grid plan for the replay world, when the runner has one. */
+  plan: { branchCount: number; refineCount: number } | null;
   /** Replay round cap K2, or null for the tree's recorded limit. */
   maxRounds: number | null;
 }
@@ -20,7 +28,12 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function failed(tree: DiscoveryTree, policyId: string, error: string, illegal: boolean): ReplayReport {
+function failed(
+  tree: DiscoveryTree,
+  policyId: string,
+  error: string,
+  illegal: boolean
+): ReplayReport {
   return {
     treeIndex: tree.treeIndex,
     policyId,
@@ -64,7 +77,9 @@ async function run(): Promise<void> {
     if (typeof Ctor !== "function") {
       throw new Error("policy module must default-export a class");
     }
-    const policyConfig = payload.beta === null ? {} : { beta: payload.beta };
+    const policyConfig: Record<string, unknown> = {};
+    if (payload.beta !== null) policyConfig.beta = payload.beta;
+    if (payload.plan) policyConfig.plan = payload.plan;
     const policy = new (Ctor as new (cfg: unknown) => ExplorationPolicy)(policyConfig);
     if (!policy || typeof policy.solve !== "function") {
       throw new Error("policy instance must implement solve(env)");
@@ -78,7 +93,9 @@ async function run(): Promise<void> {
   const report = error
     ? failed(payload.tree, payload.policyId, error, illegal)
     : scoreReplay(payload.tree, env, payload.policyId, payload.scoreConfig);
-  process.stdout.write(`${JSON.stringify({ report, negativeInfinity: report.score === Number.NEGATIVE_INFINITY })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ report, negativeInfinity: report.score === Number.NEGATIVE_INFINITY })}\n`
+  );
 }
 
 main().catch((err: unknown) => {

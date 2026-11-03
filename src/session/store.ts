@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ChatMessage, SessionEntry, SessionMeta, ToolCall, ToolResult } from "../types.js";
 import { appendLineSafe } from "../util/atomic.js";
+import { redactValue } from "../util/redact.js";
 
 export interface SessionStoreConfig {
   dir: string;
@@ -101,11 +102,16 @@ export class SessionStore {
   }
 
   private async append(entry: SessionEntry): Promise<void> {
-    this.entries.push(entry);
-    this.head = entry.id;
+    // Sessions are long-lived and may contain a tool result that echoed a
+    // credential (an `env` dump, a provider error, a model repeating a token).
+    // Redact at the single write point so nothing unredacted ever reaches disk,
+    // while the in-memory tree keeps the original for this process.
+    const stored = redactValue(entry);
+    this.entries.push(stored);
+    this.head = stored.id;
     // Atomic-ish append: a torn trailing line from a crashed writer is
     // terminated before the new record so both remain parseable.
-    await appendLineSafe(this.path, JSON.stringify(entry));
+    await appendLineSafe(this.path, JSON.stringify(stored));
   }
 
   async appendMessage(message: ChatMessage): Promise<SessionEntry> {
@@ -253,8 +259,8 @@ export class SessionStore {
         // providers reject. Fold a standalone call into a synthetic assistant
         // message so every tool result has a matching tool_calls entry.
         const last = messages.at(-1);
-        const already = last?.role === "assistant" &&
-          (last.toolCalls ?? []).some((c) => c.id === e.toolCall!.id);
+        const already =
+          last?.role === "assistant" && (last.toolCalls ?? []).some((c) => c.id === e.toolCall!.id);
         if (!already) {
           const pending = last?.role === "assistant" && !last.toolCalls;
           if (pending) {

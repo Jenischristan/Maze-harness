@@ -39,7 +39,14 @@ export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
   const { cwd } = opts;
   const inside = await git(["rev-parse", "--is-inside-work-tree"], cwd);
   if (inside.code !== 0 || inside.stdout.trim() !== "true") {
-    return { patch: "", files: [], added: 0, removed: 0, truncated: false, note: "not a git repository" };
+    return {
+      patch: "",
+      files: [],
+      added: 0,
+      removed: 0,
+      truncated: false,
+      note: "not a git repository"
+    };
   }
 
   const hasHead = (await git(["rev-parse", "--verify", "HEAD"], cwd)).code === 0;

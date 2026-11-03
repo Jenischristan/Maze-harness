@@ -10,6 +10,8 @@ export interface FixedParallelRefineConfig {
    * 0.6 (the paper's "moderately exploratory" default when history is thin).
    */
   beta: number;
+  /** Effective grid plan for this cycle; bounds width/depth. */
+  plan?: { branchCount: number; refineCount: number };
 }
 
 /**
@@ -17,7 +19,11 @@ export interface FixedParallelRefineConfig {
  * role inside a live/replay episode: it is fixed for the whole rollout and
  * scales width, depth and the stopping rule together.
  */
-function schedule(beta: number, maxParallelism: number, legalRootCap: number): {
+function schedule(
+  beta: number,
+  maxParallelism: number,
+  legalRootCap: number
+): {
   branches: number;
   refinements: number;
   stopBelowBaseline: boolean;
@@ -59,6 +65,12 @@ export class FixedParallelRefine implements ExplorationPolicy {
     this.beta = Math.max(0, Math.min(1, config.beta ?? 0.6));
     this.branches = Math.max(1, config.branches ?? 3);
     this.refinements = Math.max(0, config.refinements ?? 2);
+    // The runner hands the effective plan to the constructor in both live and
+    // replay, so `solve()` treats it as a hard bound even when this instance
+    // never sees a `planGrid` call.
+    if (config.plan) {
+      this.plan = { branchCount: config.plan.branchCount, refineCount: config.plan.refineCount };
+    }
   }
 
   /**
@@ -122,11 +134,16 @@ export class FixedParallelRefine implements ExplorationPolicy {
   async solve(env: ExplorationEnv): Promise<void> {
     const openCap = Number.isFinite(env.legalRoots()) ? env.legalRoots() : this.branches;
     const s = schedule(this.beta, env.maxParallelism, Math.max(1, openCap));
+    // The runner's effective plan is a hard bound (paper Appendix B.2): width
+    // never exceeds it, and `refineCount` bounds each branch's attempts. It
+    // arrives through the constructor, so it also applies in the replay sandbox
+    // where `planGrid` is never called on this instance.
     const plan = this.plan;
     const wantBranches = plan
       ? Math.min(plan.branchCount, this.branches, Math.max(1, openCap))
-      : s.branches;
-    const wantRefines = plan ? Math.min(plan.refineCount, this.refinements) : s.refinements;
+      : Math.min(s.branches, Math.max(1, openCap));
+    const refineCap = plan ? Math.min(plan.refineCount, this.refinements) : this.refinements;
+    const wantRefines = Math.min(s.refinements, refineCap);
     for (let attempt = 0; attempt < Math.max(1, wantRefines); attempt += 1) {
       if (env.done || env.roundsRemaining <= 0) return;
       const batch = this.nextBatch(env, wantBranches, wantRefines, s.stopBelowBaseline);
@@ -193,4 +210,3 @@ export class FixedParallelRefine implements ExplorationPolicy {
     return leaves;
   }
 }
-

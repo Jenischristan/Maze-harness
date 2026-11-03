@@ -63,7 +63,10 @@ describe("session lifecycle", () => {
     const branch = src.activeBranch().filter((e) => e.kind === "message");
     const at = branch[2]!.id;
     const fork = await cloneSession(dir, src.meta.runId, "fork", { at });
-    const contents = fork.projection().filter((m) => !m.synthetic).map((m) => m.content);
+    const contents = fork
+      .projection()
+      .filter((m) => !m.synthetic)
+      .map((m) => m.content);
     expect(contents).toEqual(["a", "re: a"]);
   });
 
@@ -94,7 +97,10 @@ describe("session lifecycle", () => {
     const dir = await mkdtemp(join(tmpdir(), "dh-resume-"));
     const src = await seedSession(dir, ["kept"]);
     const resumed = await resumeSession(dir, src.meta.runId);
-    const contents = resumed.projection().filter((m) => !m.synthetic).map((m) => m.content);
+    const contents = resumed
+      .projection()
+      .filter((m) => !m.synthetic)
+      .map((m) => m.content);
     expect(contents).toEqual(["kept", "re: kept"]);
   });
 

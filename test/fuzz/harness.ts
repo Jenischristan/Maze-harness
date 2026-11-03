@@ -34,8 +34,7 @@ export function makeRng(seed: number): Rng {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const int = (min: number, max: number): number =>
-    min + Math.floor(next() * (max - min + 1));
+  const int = (min: number, max: number): number => min + Math.floor(next() * (max - min + 1));
   const pick = <T>(items: readonly T[]): T => {
     if (items.length === 0) throw new Error("pick from empty list");
     return items[int(0, items.length - 1)]!;
@@ -54,7 +53,29 @@ export function makeRng(seed: number): Rng {
       return out;
     },
     str: (maxLen = 16) => {
-      const alphabet = ["a", "b", "c", "X", "Y", "Z", "0", "1", "2", "3", " ", "_", "-", ".", "/", "\\", "\n", "\t", "\u00e9", "\u4e2d", "\ud83d\ude00"];
+      const alphabet = [
+        "a",
+        "b",
+        "c",
+        "X",
+        "Y",
+        "Z",
+        "0",
+        "1",
+        "2",
+        "3",
+        " ",
+        "_",
+        "-",
+        ".",
+        "/",
+        "\\",
+        "\n",
+        "\t",
+        "\u00e9",
+        "\u4e2d",
+        "\ud83d\ude00"
+      ];
       const len = int(0, maxLen);
       let s = "";
       for (let i = 0; i < len; i += 1) s += pick(alphabet);

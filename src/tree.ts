@@ -1,9 +1,4 @@
-import type {
-  DiscoveryNode,
-  DiscoveryTree,
-  Observation,
-  TreeSummary
-} from "./types.js";
+import type { DiscoveryNode, DiscoveryTree, Observation, TreeSummary } from "./types.js";
 
 export const ROOT_ID = "root";
 
@@ -55,7 +50,8 @@ export class TreeIndex {
 
   leaves(revealed: ReadonlySet<string>): DiscoveryNode[] {
     return this.tree.nodes.filter(
-      (n) => revealed.has(n.id) && this.children(n.id).filter((c) => revealed.has(c.id)).length === 0
+      (n) =>
+        revealed.has(n.id) && this.children(n.id).filter((c) => revealed.has(c.id)).length === 0
     );
   }
 
@@ -105,8 +101,7 @@ export function toObservation(
     failClass: node.failClass,
     error: node.error,
     deltaVsBaseline: node.score === null ? null : (node.score - baseline) / scale,
-    deltaVsParent:
-      node.score === null ? null : (node.score - effectiveParent) / scale,
+    deltaVsParent: node.score === null ? null : (node.score - effectiveParent) / scale,
     nValid: counts.nValid,
     nTotal: counts.nTotal,
     tags: counts.tags,

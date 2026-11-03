@@ -54,7 +54,10 @@ export interface SessionSummaryLine {
   active: boolean;
 }
 
-export async function sessionLines(dir: string, activeId: string | null): Promise<SessionSummaryLine[]> {
+export async function sessionLines(
+  dir: string,
+  activeId: string | null
+): Promise<SessionSummaryLine[]> {
   const sessions = await listSessions(dir);
   return sessions.map((s) => ({
     runId: s.runId,
@@ -145,7 +148,11 @@ export async function cloneSession(
 
   const src = new SessionStore({
     dir: dirname(srcPath),
-    runId: srcPath.split("/").pop()?.replace(/\.jsonl$/, "") ?? "source"
+    runId:
+      srcPath
+        .split("/")
+        .pop()
+        ?.replace(/\.jsonl$/, "") ?? "source"
   });
   await src.init();
 
@@ -199,7 +206,11 @@ export async function deleteSession(dir: string, id: string): Promise<void> {
 export async function resumeSession(dir: string, id: string): Promise<SessionStore> {
   const path = await findSessionPath(dir, id);
   if (!path) throw new Error(`session not found: ${id}`);
-  const runId = path.split("/").pop()?.replace(/\.jsonl$/, "") ?? id;
+  const runId =
+    path
+      .split("/")
+      .pop()
+      ?.replace(/\.jsonl$/, "") ?? id;
   const store = new SessionStore({ dir: dirname(path), runId });
   await store.init();
   return store;
@@ -216,7 +227,9 @@ interface ResumeMessage {
 }
 
 /** Convert a session projection into display blocks (best effort). */
-export function projectionToBlocks(messages: ChatMessage[]): Array<{ kind: "user" | "assistant" | "note"; text: string }> {
+export function projectionToBlocks(
+  messages: ChatMessage[]
+): Array<{ kind: "user" | "assistant" | "note"; text: string }> {
   const out: Array<{ kind: "user" | "assistant" | "note"; text: string }> = [];
   for (const m of messages) {
     if (m.synthetic) {
@@ -225,7 +238,9 @@ export function projectionToBlocks(messages: ChatMessage[]): Array<{ kind: "user
     }
     if (m.role === "user") out.push({ kind: "user", text: m.content });
     else if (m.role === "assistant") {
-      const text = m.content || (m.toolCalls?.length ? `(called ${m.toolCalls.map((c) => c.name).join(", ")})` : "");
+      const text =
+        m.content ||
+        (m.toolCalls?.length ? `(called ${m.toolCalls.map((c) => c.name).join(", ")})` : "");
       if (text) out.push({ kind: "assistant", text });
     }
   }
@@ -239,4 +254,3 @@ async function listSessionFiles(dir: string): Promise<string[]> {
     return [];
   }
 }
-

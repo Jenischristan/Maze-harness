@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ROOT_ID, TreeIndex, toObservation } from "../src/tree.js";
 import { IllegalBatchError, ReplayEnv } from "../src/env/replay.js";
-import { computeScore, DEFAULT_SCORE_CONFIG, meanScoreOverGrid } from "../src/score.js";
+import {
+  computeScore,
+  DEFAULT_SCORE_CONFIG,
+  meanScore,
+  meanScoreOverGrid,
+  scoreReplay
+} from "../src/score.js";
 import { FixedParallelRefine } from "../src/policies/fixedParallelRefine.js";
-import { meanScore, scoreReplay } from "../src/score.js";
 import { syntheticTree } from "./synthetic.js";
 import type { ExplorationEnv, ExplorationPolicy, Observation } from "../src/types.js";
 
@@ -88,9 +93,9 @@ describe("replay env", () => {
   it("rejects illegal batches", async () => {
     const env = new ReplayEnv(tree(), { maxRounds: 6 });
     await expect(env.probeBatch(["b0a0"])).rejects.toBeInstanceOf(IllegalBatchError);
-    await expect(env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID])).rejects.toBeInstanceOf(
-      IllegalBatchError
-    );
+    await expect(
+      env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID])
+    ).rejects.toBeInstanceOf(IllegalBatchError);
     await env.probeBatch([ROOT_ID, ROOT_ID]);
     const leaves = env.legalActions().filter((id) => id !== ROOT_ID);
     await expect(env.probeBatch([leaves[0]!, leaves[0]!])).rejects.toBeInstanceOf(
@@ -99,7 +104,13 @@ describe("replay env", () => {
   });
 
   it("returns nothing for a leaf with no recorded child but still counts the round", async () => {
-    const t = syntheticTree({ seed: 1, branches: 1, refinements: 1, maxParallelism: 2, roundsLimit: 5 });
+    const t = syntheticTree({
+      seed: 1,
+      branches: 1,
+      refinements: 1,
+      maxParallelism: 2,
+      roundsLimit: 5
+    });
     const env = new ReplayEnv(t, { maxRounds: 5 });
     await env.probeBatch([ROOT_ID]);
     const leaf = env.legalActions().filter((id) => id !== ROOT_ID)[0]!;
@@ -175,7 +186,26 @@ describe("score", () => {
         maxParallelism: 2,
         batches: [],
         revealed: [
-          { id: "a", branch: 0, attempt: 0, parentId: "root", seq: 0, score: 2, valid: true, failClass: "ok", error: null, deltaVsBaseline: 1, deltaVsParent: null, nValid: null, nTotal: null, tags: [], branchPromising: true, branchFailedHard: false, improvedVsParent: false, improvedVsBaseline: true }
+          {
+            id: "a",
+            branch: 0,
+            attempt: 0,
+            parentId: "root",
+            seq: 0,
+            score: 2,
+            valid: true,
+            failClass: "ok",
+            error: null,
+            deltaVsBaseline: 1,
+            deltaVsParent: null,
+            nValid: null,
+            nTotal: null,
+            tags: [],
+            branchPromising: true,
+            branchFailedHard: false,
+            improvedVsParent: false,
+            improvedVsBaseline: true
+          }
         ],
         error: null,
         illegal: false,
@@ -183,11 +213,7 @@ describe("score", () => {
         wallMs: 0
       }
     ];
-    const grid = meanScoreOverGrid(
-      reports,
-      { beta1: 0, beta2: 0, normalize: "none" },
-      () => 0
-    );
+    const grid = meanScoreOverGrid(reports, { beta1: 0, beta2: 0, normalize: "none" }, () => 0);
     expect(Number.isFinite(grid)).toBe(true);
     expect(grid).toBeGreaterThan(1.9);
   });

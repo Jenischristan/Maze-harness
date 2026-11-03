@@ -38,8 +38,12 @@ describe("compaction", () => {
     const msgs = conversation(100);
     expect(estimateTokens("abcd")).toBe(1);
     expect(projectTokens(msgs)).toBeGreaterThan(0);
-    expect(shouldCompact(msgs, { contextWindow: 1000, reserveTokens: 100, keepRecentTokens: 200 })).toBe(true);
-    expect(shouldCompact([], { contextWindow: 1000, reserveTokens: 100, keepRecentTokens: 200 })).toBe(false);
+    expect(
+      shouldCompact(msgs, { contextWindow: 1000, reserveTokens: 100, keepRecentTokens: 200 })
+    ).toBe(true);
+    expect(
+      shouldCompact([], { contextWindow: 1000, reserveTokens: 100, keepRecentTokens: 200 })
+    ).toBe(false);
   });
 
   it("summarizes old messages and keeps a recent tail", async () => {

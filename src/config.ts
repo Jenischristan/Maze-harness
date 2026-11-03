@@ -1,44 +1,120 @@
 /**
  * Central runtime configuration.
  *
+ * Precedence is explicit and documented: CLI flag > environment variable >
+ * built-in default. There is no project config file and no file layer; the only
+ * on-disk config is `.dream/mcp.json` for MCP servers (see `mcp.ts`), which is
+ * not part of this resolution.
+ *
+ * Environment variables (all optional):
+ *   DREAM_BASE_URL        OpenAI-compatible endpoint
+ *   DREAM_API_KEY         provider key (never logged, never persisted raw)
+ *   DREAM_AGENT_MODEL     default model id
+ *   DREAM_CONTEXT_WINDOW  context window in tokens
+ *   DREAM_LOG_LEVEL       debug | info | warn | error
+ *   DREAM_LOG_FORMAT      text | json
+ *
  * A few values used to be re-derived inline in several places (notably the
- * context window, which was hard-coded to 128_000 in some call sites while
- * the provider had its own value). That made accounting disagree with the
- * provider and made changing the window a scavenger hunt. Everything that
- * needs the window now goes through `contextWindow()`.
+ * context window, hard-coded to 128_000 in some call sites while the provider
+ * had its own value), which made accounting disagree with the provider.
+ * Everything now goes through `resolveConfig`.
  */
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 
-/** Resolve the context window from the environment, or the default. */
-export function contextWindow(explicit?: number): number {
-  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
-    return Math.floor(explicit);
+export const DEFAULT_BASE_URL = "http://127.0.0.1:8788/v1/chat/completions";
+export const DEFAULT_MODEL = "deepseek-chat";
+
+export interface ResolvedConfig {
+  baseUrl: string;
+  apiKey: string | undefined;
+  model: string;
+  contextWindow: number;
+  logLevel: string;
+  logFormat: string;
+}
+
+export interface ConfigOverrides {
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  contextWindow?: number;
+  logLevel?: string;
+  logFormat?: string;
+}
+
+function envNumber(env: NodeJS.ProcessEnv, key: string): number | undefined {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`invalid ${key}: ${raw} (expected a positive number)`);
   }
-  const env = Number(process.env.DREAM_CONTEXT_WINDOW);
-  if (Number.isFinite(env) && env > 0) return Math.floor(env);
-  return DEFAULT_CONTEXT_WINDOW;
+  return Math.floor(n);
+}
+
+/**
+ * Resolve config with flag > env > default precedence. Throws on an invalid
+ * env value instead of silently falling back, so a typo is visible.
+ */
+export function resolveConfig(
+  overrides: ConfigOverrides = {},
+  env: NodeJS.ProcessEnv = process.env
+): ResolvedConfig {
+  const envWindow = envNumber(env, "DREAM_CONTEXT_WINDOW");
+  const flagWindow =
+    typeof overrides.contextWindow === "number" &&
+    Number.isFinite(overrides.contextWindow) &&
+    overrides.contextWindow > 0
+      ? Math.floor(overrides.contextWindow)
+      : undefined;
+  return {
+    baseUrl: pick(overrides.baseUrl, env.DREAM_BASE_URL, DEFAULT_BASE_URL),
+    apiKey: pickApiKey(overrides.apiKey, env),
+    model: pick(overrides.model, env.DREAM_AGENT_MODEL, DEFAULT_MODEL),
+    contextWindow: flagWindow ?? envWindow ?? DEFAULT_CONTEXT_WINDOW,
+    logLevel: pick(overrides.logLevel, env.DREAM_LOG_LEVEL, "info"),
+    logFormat: pick(overrides.logFormat, env.DREAM_LOG_FORMAT, "text")
+  };
+}
+
+function pick(...values: Array<string | undefined>): string {
+  for (const v of values) {
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return "";
+}
+
+/** API key resolution keeps the legacy aliases for compatibility. */
+function pickApiKey(flag: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  if (typeof flag === "string" && flag.length > 0) return flag;
+  return (
+    (env.DREAM_API_KEY && env.DREAM_API_KEY.length > 0 ? env.DREAM_API_KEY : undefined) ??
+    (env.DEEPSEEK_ROUTER_KEY && env.DEEPSEEK_ROUTER_KEY.length > 0
+      ? env.DEEPSEEK_ROUTER_KEY
+      : undefined) ??
+    (env.OPENAI_API_KEY && env.OPENAI_API_KEY.length > 0 ? env.OPENAI_API_KEY : undefined)
+  );
+}
+
+/** Resolve the context window from env/override, or the default. */
+export function contextWindow(explicit?: number): number {
+  return resolveConfig({ contextWindow: explicit }).contextWindow;
 }
 
 /** Default OpenAI-compatible endpoint used across chat/CLI. */
 export function defaultBaseUrl(): string {
-  return (
-    process.env.DREAM_BASE_URL ?? "http://127.0.0.1:8788/v1/chat/completions"
-  );
+  return resolveConfig().baseUrl;
 }
 
 /** API key from the environment (never logs the value). */
 export function defaultApiKey(): string | undefined {
-  return (
-    process.env.DREAM_API_KEY ??
-    process.env.DEEPSEEK_ROUTER_KEY ??
-    process.env.OPENAI_API_KEY
-  );
+  return resolveConfig().apiKey;
 }
 
 /** Default model name. */
-function defaultModel(): string {
-  return process.env.DREAM_AGENT_MODEL ?? "deepseek-chat";
+export function defaultModel(): string {
+  return resolveConfig().model;
 }
 
 /**

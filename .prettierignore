@@ -1,0 +1,19 @@
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated
+node_modules/
+dist/
+coverage/
+runs/
+worktrees/
+tmp/
+*.log
+*.tsbuildinfo
+__pycache__/

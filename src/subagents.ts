@@ -114,7 +114,11 @@ export interface SubAgentRunOptions {
   /** Full parent policy to inherit (rules, allowlists, and `ask` handler). */
   permissionPolicy?: PermissionPolicy;
   /** Approval handler for inherited `ask` rules, when the caller has one. */
-  approve?: (input: { tool: string; pattern: string; args: Record<string, unknown> }) => Promise<boolean>;
+  approve?: (input: {
+    tool: string;
+    pattern: string;
+    args: Record<string, unknown>;
+  }) => Promise<boolean>;
   verifyCommands?: string[];
   /** Registry carrying builtin + MCP tools; filtered by the spec's allowlist. */
   registry?: ToolRegistry;
@@ -163,7 +167,11 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
     defaultAction: opts.permission ?? base.defaultAction,
     ask: opts.approve ?? base.ask
   };
-  const hooks = new Hooks({ workspaceDir: opts.workspaceDir, timeoutMs: 120_000, maxOutputBytes: 16 * 1024 });
+  const hooks = new Hooks({
+    workspaceDir: opts.workspaceDir,
+    timeoutMs: 120_000,
+    maxOutputBytes: 16 * 1024
+  });
   for (const hook of verifyCommandsToHooks(opts.verifyCommands ?? [])) hooks.register(hook);
 
   const baseRegistry = opts.registry ?? new ToolRegistry();
@@ -226,7 +234,11 @@ export function subAgentTool(opts: {
   /** Parent permission policy inherited by every delegated sub-agent. */
   permissionPolicy?: PermissionPolicy;
   /** Parent approval handler for `ask` decisions. */
-  approve?: (input: { tool: string; pattern: string; args: Record<string, unknown> }) => Promise<boolean>;
+  approve?: (input: {
+    tool: string;
+    pattern: string;
+    args: Record<string, unknown>;
+  }) => Promise<boolean>;
 }): ToolDefinition {
   return {
     name: "delegate",
@@ -259,7 +271,13 @@ export function subAgentTool(opts: {
       }
       const task = String(args.task ?? "").trim();
       if (!task) {
-        return { callId: "", name: "delegate", ok: false, content: "delegate requires a task", error: "no-task" };
+        return {
+          callId: "",
+          name: "delegate",
+          ok: false,
+          content: "delegate requires a task",
+          error: "no-task"
+        };
       }
       try {
         const result = await runSubAgent({

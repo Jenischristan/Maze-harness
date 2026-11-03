@@ -47,7 +47,8 @@ describe("fuzz: token estimation", () => {
         };
         if (rng.bool(0.2)) m.compacted = true;
         if (rng.bool(0.2)) m.tokens = rng.int(0, 50);
-        if (rng.bool(0.3)) m.toolCalls = [{ id: "c", name: "read", arguments: { path: rng.str(5) } }];
+        if (rng.bool(0.3))
+          m.toolCalls = [{ id: "c", name: "read", arguments: { path: rng.str(5) } }];
         return m;
       });
       expect(projectTokens(msgs)).toBeGreaterThanOrEqual(0);
@@ -73,7 +74,11 @@ describe("fuzz: token estimation", () => {
   it("formatSummaryPrompt preserves role labels", () => {
     const msgs: ChatMessage[] = [
       { role: "user", content: "do the thing" },
-      { role: "assistant", content: "", toolCalls: [{ id: "1", name: "read", arguments: { path: "a" } }] },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "1", name: "read", arguments: { path: "a" } }]
+      },
       { role: "tool", content: "result", name: "read" }
     ];
     const prompt = formatSummaryPrompt(msgs);
@@ -141,7 +146,13 @@ describe("fuzz: cost", () => {
   it(
     "usdFor is non-negative and linear in token counts",
     fuzzCases({ seed: 0xb06, runs: 200 }, (rng) => {
-      const model = rng.pick(["deepseek-chat", "gpt-4o", "unknown-model", "local", "claude-3-5-sonnet"]);
+      const model = rng.pick([
+        "deepseek-chat",
+        "gpt-4o",
+        "unknown-model",
+        "local",
+        "claude-3-5-sonnet"
+      ]);
       const p = rng.int(0, 1_000_000);
       const c = rng.int(0, 1_000_000);
       const usd = usdFor(model, { promptTokens: p, completionTokens: c, totalTokens: p + c });
@@ -157,7 +168,12 @@ describe("fuzz: cost", () => {
       const s = tracker.summary();
       expect(s.calls).toBe(1);
       expect(s.totalTokens).toBe(15);
-      const rec = tracker.record({ promptTokens: 1, completionTokens: 1, totalTokens: 2, usd: 0.5 });
+      const rec = tracker.record({
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+        usd: 0.5
+      });
       expect(rec.usd).toBe(0.5);
       expect(tracker.summary().usd).toBeCloseTo(s.usd + 0.5, 12);
     })

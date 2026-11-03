@@ -146,7 +146,9 @@ describe("fuzz: permissions", () => {
           expect(ok).toBe(true);
         }
       }
-      expect(networkAllowed({ ...policy, networkEnabled: false }, `https://${allow[0]}/`)).toBe(false);
+      expect(networkAllowed({ ...policy, networkEnabled: false }, `https://${allow[0]}/`)).toBe(
+        false
+      );
     })
   );
 });

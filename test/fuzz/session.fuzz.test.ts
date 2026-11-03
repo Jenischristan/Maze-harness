@@ -38,11 +38,25 @@ describe("fuzz: session projection", () => {
       await store.appendMessage({ role: "user", content: "TASK" });
       const n = rng.int(1, 12);
       for (let i = 0; i < n; i += 1) {
-        const kind = rng.pick(["message", "call", "result", "note", "checkpoint", "compaction"] as const);
+        const kind = rng.pick([
+          "message",
+          "call",
+          "result",
+          "note",
+          "checkpoint",
+          "compaction"
+        ] as const);
         if (kind === "message") {
-          await store.appendMessage({ role: rng.pick(["user", "assistant"] as const), content: rng.str(20) });
+          await store.appendMessage({
+            role: rng.pick(["user", "assistant"] as const),
+            content: rng.str(20)
+          });
         } else if (kind === "call") {
-          await store.appendToolCall({ id: `c${i}`, name: "read", arguments: { path: rng.str(5) } });
+          await store.appendToolCall({
+            id: `c${i}`,
+            name: "read",
+            arguments: { path: rng.str(5) }
+          });
         } else if (kind === "result") {
           await store.appendToolResult({
             callId: rng.bool() ? `c${rng.int(0, i)}` : `dangling${i}`,
@@ -120,7 +134,12 @@ describe("fuzz: session persistence", () => {
       await mkdir(caseDir, { recursive: true });
       const n = rng.int(0, 3);
       for (let i = 0; i < n; i += 1) {
-        const s = new SessionStore({ dir: caseDir, runId: `s-${i}-${rng.int(0, 999)}`, model: "m", name: `n${i}` });
+        const s = new SessionStore({
+          dir: caseDir,
+          runId: `s-${i}-${rng.int(0, 999)}`,
+          model: "m",
+          name: `n${i}`
+        });
         await s.init();
         const msgs = rng.int(0, 4);
         for (let k = 0; k < msgs; k += 1) await s.appendMessage({ role: "user", content: `x${k}` });

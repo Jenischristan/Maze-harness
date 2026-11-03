@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { taskChildEnv } from "./util/env.js";
 
 /**
  * Minimal Model Context Protocol (MCP) client over stdio.
@@ -72,7 +73,10 @@ export class McpClient {
   private readonly proc: ChildProcessWithoutNullStreams;
   private buffer = "";
   private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   private closed = false;
   readonly name: string;
   private tools: McpToolInfo[] = [];
@@ -95,7 +99,9 @@ export class McpClient {
   static async connect(cfg: McpServerConfig, timeoutMs = 15_000): Promise<McpClient> {
     const proc = spawn(cfg.command, cfg.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...(cfg.env ?? {}) }
+      // An MCP server is declared by a file inside the workspace, so treat it
+      // as untrusted: no provider credentials, no loader/preload variables.
+      env: taskChildEnv(process.env, cfg.env)
     }) as ChildProcessWithoutNullStreams;
     const client = new McpClient(proc, cfg.name);
     // A failed handshake must not leak the child: connectMcpServers records
@@ -112,9 +118,13 @@ export class McpClient {
       )) as { protocolVersion?: string } | null;
       void init;
       client.notify("notifications/initialized", {});
-      const list = (await client.request("tools/list", {}, timeoutMs)) as
-        | { tools?: Array<{ name?: string; description?: string; inputSchema?: Record<string, unknown> }> }
-        | null;
+      const list = (await client.request("tools/list", {}, timeoutMs)) as {
+        tools?: Array<{
+          name?: string;
+          description?: string;
+          inputSchema?: Record<string, unknown>;
+        }>;
+      } | null;
       client.tools = (list?.tools ?? [])
         .filter((t) => typeof t.name === "string" && t.name.length > 0)
         .map((t) => ({
@@ -208,11 +218,16 @@ export class McpClient {
     });
   }
 
-  async callTool(name: string, args: Record<string, unknown>, timeoutMs = 120_000): Promise<{ ok: boolean; text: string }> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs = 120_000
+  ): Promise<{ ok: boolean; text: string }> {
     try {
-      const result = (await this.request("tools/call", { name, arguments: args }, timeoutMs)) as
-        | { content?: Array<{ type?: string; text?: string }>; isError?: boolean }
-        | null;
+      const result = (await this.request("tools/call", { name, arguments: args }, timeoutMs)) as {
+        content?: Array<{ type?: string; text?: string }>;
+        isError?: boolean;
+      } | null;
       const parts = (result?.content ?? [])
         .map((c) => (typeof c.text === "string" ? c.text : ""))
         .filter((t) => t.length > 0);
@@ -275,7 +290,10 @@ export async function connectMcpServers(
       clients.push(client);
       for (const info of client.toolInfos) tools.push(mcpToolDefinition(client, info));
     } catch (err) {
-      errors.push({ server: server.name, message: err instanceof Error ? err.message : String(err) });
+      errors.push({
+        server: server.name,
+        message: err instanceof Error ? err.message : String(err)
+      });
     }
   }
   return { clients, tools, errors };

@@ -6,18 +6,17 @@ import type {
   AgentContext,
   TaskSpec
 } from "../types.js";
-import type { PermissionPolicy } from "../tools/permissions.js";
-import { DEFAULT_PERMISSION_POLICY } from "../tools/permissions.js";
+import { DEFAULT_PERMISSION_POLICY, type PermissionPolicy } from "../tools/permissions.js";
 import { ToolExecutor, type ToolRegistry } from "../tools/index.js";
 import { buildAgentToolset, skillsPrompt, type AgentToolset } from "../registry.js";
-import { makeDefaultHooks } from "../agent/verify.js";
+import { makeDefaultHooks, writeTranscript } from "../agent/verify.js";
 import { runAgentLoop, type AgentEvent } from "../agent/loop.js";
 import { SessionStore } from "../session/store.js";
 import { CostTracker } from "../cost.js";
 import { DEFAULT_COMPACTION } from "../context/compaction.js";
 import { loadMemory } from "../context/memory.js";
-import { writeTranscript } from "../agent/verify.js";
 import { buildSystemPrompt } from "../agent/prompts.js";
+import type { BudgetLimits } from "../util/limits.js";
 
 export interface ToolAgentConfig {
   provider: ChatProvider;
@@ -43,6 +42,11 @@ export interface ToolAgentConfig {
   signal?: AbortSignal;
   /** Discover MCP tools for the attempt workspace (default true). */
   enableMcp?: boolean;
+  /**
+   * Hard limits beyond `maxTurns` (tokens, wall-clock, USD, tool calls). A
+   * task that exceeds one stops cleanly instead of running unbounded.
+   */
+  budget?: BudgetLimits;
 }
 
 async function renderSystemPrompt(
@@ -65,7 +69,9 @@ function renderUserPrompt(context: AgentContext): string {
   const lines: string[] = [];
   lines.push(context.taskPrompt);
   lines.push("");
-  lines.push(`Attempt: branch ${context.branch}, attempt ${context.attempt} (node ${context.nodeId}).`);
+  lines.push(
+    `Attempt: branch ${context.branch}, attempt ${context.attempt} (node ${context.nodeId}).`
+  );
   if (context.ancestorPath.length > 0) {
     lines.push("");
     lines.push("History along this branch (oldest first):");
@@ -117,7 +123,10 @@ export class ToolAgent implements DiscoveryAgent {
     await session.init();
     const permission = this.cfg.permission ?? DEFAULT_PERMISSION_POLICY;
     const verify = this.cfg.verifyCommands ?? [];
-    const hooks = makeDefaultHooks(verify, { workspaceDir, maxOutputBytes: this.cfg.maxOutputBytes });
+    const hooks = makeDefaultHooks(verify, {
+      workspaceDir,
+      maxOutputBytes: this.cfg.maxOutputBytes
+    });
     const cost = new CostTracker({
       model: this.cfg.provider.model,
       explorationModel: this.cfg.explorationModel
@@ -160,6 +169,7 @@ export class ToolAgent implements DiscoveryAgent {
           maxTurns: this.cfg.maxTurns ?? 40,
           compaction: { ...DEFAULT_COMPACTION, contextWindow },
           cost,
+          budget: this.cfg.budget,
           onEvent: this.cfg.onEvent,
           signal: this.cfg.signal
         },

@@ -64,7 +64,10 @@ export const editTool: ToolDefinition = {
     try {
       original = await readFile(full, "utf8");
     } catch (err) {
-      return fail(`edit failed reading ${path}: ${err instanceof Error ? err.message : String(err)}`, "read-error");
+      return fail(
+        `edit failed reading ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        "read-error"
+      );
     }
     // Stale-file guard: if the file changed on disk since the agent read it
     // (another tool, bash, an external editor), refuse. Checking only
@@ -92,7 +95,10 @@ export const editTool: ToolDefinition = {
       }
       const m = matchText(op.oldText);
       if (m.idx === -1) {
-        return fail(`edit[${i}] oldText not found in ${path} (file may have changed since read)`, "oldText-not-found");
+        return fail(
+          `edit[${i}] oldText not found in ${path} (file may have changed since read)`,
+          "oldText-not-found"
+        );
       }
       const second = m.text.indexOf(op.oldText, m.idx + 1);
       if (second !== -1) {
@@ -129,7 +135,10 @@ export const editTool: ToolDefinition = {
       // and rewriting an executable script must keep its `+x` bit.
       await writeFileAtomic(full, out, "utf8");
     } catch (err) {
-      return fail(`edit failed writing ${path}: ${err instanceof Error ? err.message : String(err)}`, "write-error");
+      return fail(
+        `edit failed writing ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        "write-error"
+      );
     }
     ctx.modifiedFiles.add(full);
     ctx.readHashes?.set(full, hash(out));

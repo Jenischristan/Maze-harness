@@ -47,12 +47,14 @@ export interface AgentToolsetOptions {
   /** Permission policy inherited by delegated sub-agents. */
   permissionPolicy?: PermissionPolicy;
   /** Approval handler inherited by delegated sub-agents. */
-  approve?: (input: { tool: string; pattern: string; args: Record<string, unknown> }) => Promise<boolean>;
+  approve?: (input: {
+    tool: string;
+    pattern: string;
+    args: Record<string, unknown>;
+  }) => Promise<boolean>;
 }
 
-export async function buildAgentToolset(
-  opts: AgentToolsetOptions
-): Promise<AgentToolset> {
+export async function buildAgentToolset(opts: AgentToolsetOptions): Promise<AgentToolset> {
   const workspaceDir = resolve(opts.workspaceDir);
   const registry = new ToolRegistry();
   const warnings: string[] = [];

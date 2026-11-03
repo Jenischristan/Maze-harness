@@ -17,9 +17,7 @@ export function printEvent(event: AgentEvent): void {
       );
       break;
     case "compaction":
-      process.stdout.write(
-        `  [compacted ${event.tokensBefore} → ${event.tokensAfter} tokens]\n`
-      );
+      process.stdout.write(`  [compacted ${event.tokensBefore} → ${event.tokensAfter} tokens]\n`);
       break;
     case "error":
       process.stderr.write(`  error: ${event.message}\n`);

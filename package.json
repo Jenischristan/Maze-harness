@@ -1,34 +1,58 @@
 {
   "name": "dream-harness",
-  "version": "0.2.0",
+  "version": "1.0.0",
+  "description": "Dream-RSI-style recursive self-improvement harness: a coding agent, an exploration-policy loop, and a replay sandbox.",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "Dream-RSI-style recursive exploration-policy improvement harness with a coding-agent CLI, tool calling, compaction, permissions, and sessions.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.12.0",
   "bin": {
     "dream-harness": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "prompts/",
+    "src/policies/variants/",
+    "src/policies/sandboxRunner.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "start": "tsx src/cli.ts chat",
     "chat": "tsx src/cli.ts chat",
-    "build": "tsc --noEmit && esbuild src/cli.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli.js",
+    "build": "pnpm typecheck && esbuild src/cli.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli.js",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm typecheck && pnpm test"
-  },
-  "engines": {
-    "node": ">=20"
+    "test:coverage": "vitest run --coverage",
+    "test:cli": "node test/cli-e2e.test.mjs",
+    "docs": "typedoc --emit none",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "prepublishOnly": "pnpm build && pnpm check",
+    "clean": "rm -rf dist coverage"
   },
   "dependencies": {
     "commander": "^12.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.12.0",
     "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^2.0.0",
     "esbuild": "^0.23.0",
+    "eslint": "^9.12.0",
+    "prettier": "^3.3.3",
     "tsx": "^4.16.0",
+    "typedoc": "^0.26.0",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.8.0",
     "vitest": "^2.0.0"
   }
 }

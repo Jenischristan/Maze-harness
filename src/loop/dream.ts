@@ -3,9 +3,13 @@ import type {
   DiscoveryAgent,
   DiscoveryTree,
   Evaluator,
+  ExplorationPolicy,
+  GridPlan,
+  GridPlanningContext,
   PolicyDeveloper,
   ReplayScoreConfig,
-  TaskSpec
+  TaskSpec,
+  TreeSummary
 } from "../types.js";
 import { GitWorkspace } from "../workspace/git.js";
 import { LiveEnv } from "../env/live.js";
@@ -26,7 +30,8 @@ import {
   type DefaultBetaDecision,
   type LiveCycleManifest
 } from "./manifest.js";
-import type { ExplorationPolicy, GridPlan, GridPlanningContext } from "../types.js";
+import { RunLock, runLockPath } from "../util/lock.js";
+import { getLogger } from "../util/logger.js";
 
 export interface DreamConfig {
   runId: string;
@@ -64,6 +69,11 @@ export interface DreamConfig {
    * `null` to disable beta selection entirely.
    */
   initialBeta?: number | null;
+  /**
+   * Continue a previously interrupted run from its last completed round.
+   * Defaults to true; pass false to start over and overwrite the run state.
+   */
+  resume?: boolean;
   onEvent?: (event: DreamEvent) => void;
 }
 
@@ -76,8 +86,21 @@ export type DreamEvent =
       source: "policy" | "fallback";
     }
   | { type: "beta-selected"; round: number; decision: DefaultBetaDecision }
-  | { type: "online-batch"; round: number; batch: string[]; nodes: number; best: number | null; tree: DiscoveryTree }
-  | { type: "online-finished"; round: number; treeIndex: number; best: number | null; calls: number }
+  | {
+      type: "online-batch";
+      round: number;
+      batch: string[];
+      nodes: number;
+      best: number | null;
+      tree: DiscoveryTree;
+    }
+  | {
+      type: "online-finished";
+      round: number;
+      treeIndex: number;
+      best: number | null;
+      calls: number;
+    }
   | { type: "offline"; round: number; event: OfflineEvent }
   | {
       type: "round-finished";
@@ -116,8 +139,32 @@ export interface CycleHistory {
 
 export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   const runRoot = cfg.runRoot ?? "runs";
+  const log = getLogger("loop.dream", { runId: cfg.runId, mode: cfg.mode });
   const store = new RunStore({ rootDir: runRoot, runId: cfg.runId });
   await store.init();
+  // Two runs sharing `runs/` raced on `_current`, manifest files and the
+  // `policies/build/<id>.ts` sources, silently mixing two experiments' history.
+  // One exclusive, PID-stamped lock per run root makes that impossible. The
+  // lock is reclaimed automatically when its owner is gone.
+  const lock = new RunLock({
+    path: runLockPath(runRoot),
+    runId: cfg.runId,
+    onReclaim: (info, reason) =>
+      log.warn("reclaimed stale run lock", { path: runLockPath(runRoot), pid: info?.pid, reason })
+  });
+  await lock.acquire();
+  try {
+    return await runDreamLocked(cfg, store, log);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function runDreamLocked(
+  cfg: DreamConfig,
+  store: RunStore,
+  log: import("../util/logger.js").Logger
+): Promise<DreamResult> {
   const workspace = new GitWorkspace({
     repoDir: cfg.repoDir,
     worktreesDir: `${cfg.repoDir}/worktrees`,
@@ -144,9 +191,37 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
   // default-beta rule over the archived live manifests and sweeps.
   let bakedBeta: number | null = cfg.initialBeta ?? null;
 
-  for (let round = 1; round <= cfg.rounds; round += 1) {
+  // Resume at the round boundary. A killed run previously restarted from
+  // round 1, re-ran every discovery cycle and overwrote the earlier trees.
+  // `state.json` is written after each completed round; the archived trees and
+  // live manifests are the source of truth for the rounds already done.
+  let startRound = 1;
+  if (cfg.resume !== false) {
+    const resumed = await resumeState(cfg, store, log);
+    if (resumed) {
+      startRound = resumed.round + 1;
+      policyId = resumed.policyId;
+      policySource = resumed.policySource;
+      cumulativeCalls = resumed.cumulativeCalls;
+      trees.push(...resumed.trees);
+      results.push(...resumed.results);
+      for (const tree of resumed.trees) {
+        histories.set(tree.treeIndex, resumed.histories.get(tree.treeIndex) ?? []);
+      }
+      cycleHistory.push(...resumed.cycleHistory);
+      bakedBeta = resumed.beta;
+      log.info("resuming run at round boundary", {
+        nextRound: startRound,
+        completedRounds: resumed.round,
+        calls: cumulativeCalls
+      });
+    }
+  }
+
+  for (let round = startRound; round <= cfg.rounds; round += 1) {
     if (cfg.signal?.aborted) break;
     cfg.onEvent?.({ type: "round-started", round, policyId });
+    log.info("round started", { round, policyId });
     const treeIndex = round - 1;
     if (round > 1) {
       const manifests = await loadLiveManifests(manifestDir);
@@ -169,11 +244,15 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     const policyModule = (await import(compiled.bundlePath)) as {
       default: new (cfg: unknown) => import("../types.js").ExplorationPolicy;
     };
-    const policyConfig = bakedBeta === null ? {} : { beta: bakedBeta };
-    const policy = new policyModule.default(policyConfig);
+    // The grid planner is consulted on a probe instance first: `planGrid` runs
+    // before a new live grid exists and must not see the cycle's outcomes. Its
+    // plan is then handed to the policy that actually drives `solve()`, through
+    // the constructor, so the plan is a hard bound in both live and replay.
+    const planner = new policyModule.default(bakedBeta === null ? {} : { beta: bakedBeta });
     const priorHistory = trees.map((t) => summaryFromTree(t));
+
     const planned = await planGridForRound({
-      policy,
+      policy: planner,
       round,
       history: cycleHistory,
       caps: cfg.gridCaps ?? {
@@ -185,6 +264,9 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     });
     const plan = planned.plan;
     const planSource = planned.source;
+    const policyConfig: import("../types.js").PolicyConfig =
+      bakedBeta === null ? { plan } : { beta: bakedBeta, plan };
+    const policy = new policyModule.default(policyConfig);
     const env = new LiveEnv({
       runId: cfg.runId,
       treeIndex,
@@ -265,11 +347,14 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
         scoreGrid: cfg.scoreGrid,
         betaGrid: cfg.betaGrid,
         paretoLambda: cfg.paretoLambda,
+        // Replay under the same grid plan the online cycle was run with, so the
+        // plan bounds the policy identically in live and replay.
+        plan,
         sandbox: cfg.sandbox,
         policyWorkDir: `${store.dir}/policies/work`,
         onEvent: (event) => cfg.onEvent?.({ type: "offline", round, event })
       });
-      let meanScore = offline.selected.meanScore;
+      const meanScore = offline.selected.meanScore;
       let holdoutScore: number | null = null;
       if (cfg.holdoutLast) {
         const newest = trees.at(-1);
@@ -288,7 +373,8 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
               trees: [newest],
               histories,
               scoreConfig: cfg.scoreConfig,
-              sandbox: cfg.sandbox
+              sandbox: cfg.sandbox,
+              plan
             });
             holdoutScore = mean(holdout);
           }
@@ -332,14 +418,131 @@ export async function runDream(cfg: DreamConfig): Promise<DreamResult> {
     }
     await store.saveState({
       runId: cfg.runId,
+      // Record the mode so `report` can classify a run without guessing from
+      // its id; `--run-id` accepts any identifier.
+      mode: cfg.mode,
       round,
       policyId,
       policySource,
       cumulativeCalls,
       results
     });
+    log.info("round finished", {
+      round,
+      policyId,
+      treeIndex,
+      calls: cumulativeCalls,
+      best: bestOf(tree)
+    });
   }
+  log.info("run finished", { rounds: results.length, calls: cumulativeCalls });
   return { rounds: results };
+}
+
+interface ResumedState {
+  /** Last fully completed round, or 0 when nothing was recorded. */
+  round: number;
+  policyId: string;
+  policySource: string;
+  cumulativeCalls: number;
+  trees: DiscoveryTree[];
+  results: DreamResult["rounds"];
+  histories: Map<number, import("../types.js").TreeSummary[]>;
+  cycleHistory: CycleHistory[];
+  beta: number | null;
+}
+
+/**
+ * Reconstruct the loop state from a previous run's on-disk artifacts.
+ *
+ * A run writes `state.json` after every completed round, plus each tree under
+ * `trees/` and a live manifest under `reports/`. `state.json` is the pointer to
+ * "how far did we get"; the trees and manifests are re-read from disk so a
+ * resumed run replays the *same* history the offline phase would have used,
+ * rather than trusting a partially serialized copy.
+ *
+ * Returns null when there is nothing to resume (no state, or the run already
+ * finished all its rounds, or the recorded state is unreadable).
+ */
+async function resumeState(
+  cfg: DreamConfig,
+  store: RunStore,
+  log: import("../util/logger.js").Logger
+): Promise<ResumedState | null> {
+  const state = await store.loadState<{
+    round?: unknown;
+    policyId?: unknown;
+    policySource?: unknown;
+    cumulativeCalls?: unknown;
+    results?: unknown;
+  }>();
+  if (!state) return null;
+  const saved = state;
+  const recordedRound = saved.round;
+  if (typeof recordedRound !== "number" || !Number.isInteger(recordedRound)) return null;
+  if (recordedRound < 1) return null;
+  if (recordedRound >= cfg.rounds) {
+    log.info("run already completed all requested rounds; nothing to resume", {
+      completed: recordedRound,
+      requested: cfg.rounds
+    });
+    return null;
+  }
+  const trees = await store.loadTrees();
+  // Only keep the prefix that `recordedRound` actually completed, so a tree
+  // written by an interrupted round is not counted twice.
+  const completed = trees.filter((t) => t.treeIndex < recordedRound);
+  if (completed.length !== recordedRound) {
+    log.warn("resume state disagrees with archived trees; starting the incomplete round over", {
+      completedRounds: recordedRound,
+      archivedTrees: completed.length
+    });
+  }
+  const manifests = await loadLiveManifests(join(store.dir, "reports"));
+  const cycleHistory: CycleHistory[] = [];
+  for (const tree of completed) {
+    const manifest = manifests.find((m) => m.treeIndex === tree.treeIndex);
+    const plan: GridPlan = manifest
+      ? {
+          branchCount: manifest.plannedBranchCount,
+          refineCount: manifest.plannedRefineCount,
+          reason: manifest.planReason
+        }
+      : {
+          branchCount: Math.max(1, tree.nodes.filter((n) => n.parentId === "root").length),
+          refineCount: Math.max(0, ...tree.nodes.map((n) => n.attempt)),
+          reason: "resumed: plan reconstructed from the recorded tree"
+        };
+    cycleHistory.push({ tree, plan, beta: manifest?.beta ?? null, rounds: manifest?.rounds ?? 0 });
+  }
+  // Each tree's prior history is every tree before it, matching the live run.
+  const histories = new Map<number, import("../types.js").TreeSummary[]>();
+  for (const tree of completed) {
+    histories.set(
+      tree.treeIndex,
+      completed.filter((t) => t.treeIndex < tree.treeIndex).map((t) => summaryFromTree(t))
+    );
+  }
+  const last = completed.at(-1);
+  const results = Array.isArray(saved.results)
+    ? (saved.results as DreamResult["rounds"]).filter((r) => r && r.round <= recordedRound)
+    : [];
+  const lastManifest = manifests.find((m) => m.treeIndex === (last?.treeIndex ?? -1));
+  return {
+    round: recordedRound,
+    policyId: typeof saved.policyId === "string" ? saved.policyId : cfg.seedPolicy.policyId,
+    policySource:
+      typeof saved.policySource === "string" ? saved.policySource : cfg.seedPolicy.source,
+    cumulativeCalls:
+      typeof saved.cumulativeCalls === "number" && Number.isFinite(saved.cumulativeCalls)
+        ? saved.cumulativeCalls
+        : 0,
+    trees: completed,
+    results,
+    histories,
+    cycleHistory,
+    beta: lastManifest?.beta ?? cfg.initialBeta ?? null
+  };
 }
 
 /**
@@ -447,10 +650,7 @@ function normalizePlan(
   return { branchCount: b, refineCount: r, reason };
 }
 
-async function replayFromTree(
-  tree: DiscoveryTree,
-  batches: string[][]
-): Promise<ReplayEnv> {
+async function replayFromTree(tree: DiscoveryTree, batches: string[][]): Promise<ReplayEnv> {
   const env = new ReplayEnv(tree, { maxRounds: tree.roundsLimit });
   for (const batch of batches) {
     if (env.done) break;

@@ -5,6 +5,7 @@ import { bashTool } from "./bash.js";
 import { editTool } from "./edit.js";
 import { fetchTool } from "./fetch.js";
 import { pageTool } from "./page.js";
+import { applyPatchTool } from "./patch.js";
 import { readTool } from "./read.js";
 import { globTool, grepTool } from "./search.js";
 import { writeTool } from "./write.js";
@@ -15,9 +16,18 @@ export * from "./truncate.js";
 export * from "./limits.js";
 export * from "./hookTypes.js";
 export { resetShells } from "./bash.js";
-export { readTool, writeTool, editTool, bashTool, globTool, grepTool };
+export { readTool, writeTool, editTool, applyPatchTool, bashTool, globTool, grepTool };
 
-const BUILTIN_TOOLS: ToolDefinition[] = [readTool, grepTool, globTool, editTool, writeTool, bashTool, pageTool];
+const BUILTIN_TOOLS: ToolDefinition[] = [
+  readTool,
+  grepTool,
+  globTool,
+  editTool,
+  applyPatchTool,
+  writeTool,
+  bashTool,
+  pageTool
+];
 
 /** Tools that reach the network; registered only where a policy allows it. */
 export const NETWORK_TOOLS: ToolDefinition[] = [fetchTool];
@@ -46,7 +56,10 @@ export class ToolRegistry {
   }
 
   /** Tool definitions formatted for a model request. */
-  schema(): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  schema(): Array<{
+    type: "function";
+    function: { name: string; description: string; parameters: Record<string, unknown> };
+  }> {
     return this.list().map((t) => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.parameters }
@@ -203,7 +216,13 @@ export class ToolExecutor {
       return { ...result, callId: call.id, name: call.name };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { callId: call.id, name: call.name, ok: false, content: `tool error: ${message}`, error: message };
+      return {
+        callId: call.id,
+        name: call.name,
+        ok: false,
+        content: `tool error: ${message}`,
+        error: message
+      };
     }
   }
 }

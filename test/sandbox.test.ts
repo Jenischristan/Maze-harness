@@ -132,9 +132,9 @@ describe("policy sandbox hardening", () => {
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.DREAM_API_KEY).toBeUndefined();
     expect(env.LD_PRELOAD).toBeUndefined();
-    expect(Object.keys(env).every((k) => (SANDBOX_ENV_ALLOWLIST as readonly string[]).includes(k))).toBe(
-      true
-    );
+    expect(
+      Object.keys(env).every((k) => (SANDBOX_ENV_ALLOWLIST as readonly string[]).includes(k))
+    ).toBe(true);
   });
 
   it("passes the hardened Node flags to the child", () => {

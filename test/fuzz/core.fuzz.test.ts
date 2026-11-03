@@ -24,8 +24,7 @@ import {
   betaSweepFromCells
 } from "../../src/score.js";
 import type { DiscoveryNode, DiscoveryTree, Observation, TreeSummary } from "../../src/types.js";
-import { fuzzCases } from "./harness.js";
-import type { Rng } from "./harness.js";
+import { fuzzCases, type Rng } from "./harness.js";
 
 function randomTree(rng: Rng): DiscoveryTree {
   const branches = rng.int(1, 5);
@@ -50,7 +49,9 @@ function randomTree(rng: Rng): DiscoveryTree {
         valid: !failed,
         failClass: failed ? rng.pick(["compile", "runtime", "timeout", "incorrect"]) : "ok",
         error: failed ? "synthetic" : null,
-        diagnostics: rng.bool() ? { n_valid: rng.int(0, 5), n_total: rng.int(0, 9), tags: ["t"] } : null,
+        diagnostics: rng.bool()
+          ? { n_valid: rng.int(0, 5), n_total: rng.int(0, 9), tags: ["t"] }
+          : null,
         snapshotRef: id,
         artifactPath: null,
         cost: { agentCalls: 1, wallMs: 10 },
@@ -126,7 +127,10 @@ describe("fuzz: TreeIndex", () => {
       if (tree.nodes.length === 0) return;
       const dup = { ...tree, nodes: [...tree.nodes, { ...tree.nodes[0]! }] };
       expect(() => new TreeIndex(dup)).toThrow(/duplicate/);
-      const rooted = { ...tree, nodes: [{ ...tree.nodes[0]!, id: ROOT_ID }, ...tree.nodes.slice(1)] };
+      const rooted = {
+        ...tree,
+        nodes: [{ ...tree.nodes[0]!, id: ROOT_ID }, ...tree.nodes.slice(1)]
+      };
       expect(() => new TreeIndex(rooted)).toThrow(/root/);
     })
   );
@@ -288,7 +292,14 @@ describe("fuzz: ReplayEnv", () => {
       await randomRollout(env, rng);
       for (const node of tree.nodes) {
         const m = env.meta(node.id);
-        expect(Object.keys(m).sort()).toEqual(["attempt", "branch", "id", "parentId", "seq", "tags"]);
+        expect(Object.keys(m).sort()).toEqual([
+          "attempt",
+          "branch",
+          "id",
+          "parentId",
+          "seq",
+          "tags"
+        ]);
         expect("score" in m).toBe(false);
       }
       expect(env.meta(ROOT_ID).tags).toEqual(["root"]);
@@ -328,7 +339,9 @@ describe("fuzz: observation signals", () => {
       const out = withBranchSignals(obs, earlier);
       const successful = (o: Observation): boolean => o.error === null && o.failClass === "ok";
       const priorSuccess = earlier.some(successful);
-      const sameClass = earlier.filter((o) => !successful(o) && o.failClass === obs.failClass).length;
+      const sameClass = earlier.filter(
+        (o) => !successful(o) && o.failClass === obs.failClass
+      ).length;
       expect(out.branchFailedHard).toBe(!successful(obs) && sameClass >= 1 && !priorSuccess);
       expect(out.improvedVsParent).toBe(obs.deltaVsParent !== null && obs.deltaVsParent > 0);
       expect(out.improvedVsBaseline).toBe(obs.deltaVsBaseline !== null && obs.deltaVsBaseline > 0);
@@ -351,7 +364,9 @@ describe("fuzz: observation signals", () => {
         valid: score !== null,
         failClass: score === null ? "runtime" : "ok",
         error: score === null ? "e" : null,
-        diagnostics: rng.bool() ? { nValid: rng.int(0, 3), nTotal: rng.int(0, 5), tags: ["a", 1] } : "nope",
+        diagnostics: rng.bool()
+          ? { nValid: rng.int(0, 3), nTotal: rng.int(0, 5), tags: ["a", 1] }
+          : "nope",
         snapshotRef: "n",
         artifactPath: null,
         cost: { agentCalls: 0, wallMs: 0 },
@@ -394,7 +409,13 @@ describe("fuzz: computeScore", () => {
         rho: hasRho ? rng.next() * 1.4 - 0.2 : undefined,
         normalize: rng.pick(["none", "relativeToBaseline"] as const)
       };
-      const comp = computeScore({ baselineScore: baseline, revealedScores: revealed, rounds, config, batchSizes });
+      const comp = computeScore({
+        baselineScore: baseline,
+        revealedScores: revealed,
+        rounds,
+        config,
+        batchSizes
+      });
       expect(Number.isFinite(comp.score)).toBe(true);
       expect(comp.n).toBe(revealed.length);
       expect(comp.k).toBe(rounds);
@@ -405,8 +426,13 @@ describe("fuzz: computeScore", () => {
         expect(comp.penalty).toBeCloseTo((config.lambda ?? 0) * widthForEmpty, 9);
         expect(comp.bonus).toBe(0);
       }
-      const best = revealed.reduce<number | null>((acc, s) => (s === null ? acc : acc === null || s > acc ? s : acc), null) ?? baseline;
-      const norm = config.normalize === "none" ? best : (best - baseline) / Math.max(Math.abs(baseline), 1);
+      const best =
+        revealed.reduce<number | null>(
+          (acc, s) => (s === null ? acc : acc === null || s > acc ? s : acc),
+          null
+        ) ?? baseline;
+      const norm =
+        config.normalize === "none" ? best : (best - baseline) / Math.max(Math.abs(baseline), 1);
       expect(comp.best).toBeCloseTo(norm, 9);
       const width = batchSizes.reduce((a, s) => a + Math.max(0, s - 1), 0);
       const n = revealed.length;
@@ -434,7 +460,11 @@ describe("fuzz: computeScore", () => {
       const report = scoreReplay(tree, env, "p", { beta1: 0.002, beta2: 0.01, normalize: "none" });
       expect(meanScore([report])).toBeCloseTo(report.score, 12);
       expect(meanScore([])).toBe(0);
-      const grid = meanScoreOverGrid([report], { beta1: 0.002, beta2: 0.01, normalize: "none" }, () => tree.baselineScore);
+      const grid = meanScoreOverGrid(
+        [report],
+        { beta1: 0.002, beta2: 0.01, normalize: "none" },
+        () => tree.baselineScore
+      );
       expect(Number.isFinite(grid)).toBe(true);
       const inf = meanScoreOverGrid(
         [{ ...report, score: Number.NEGATIVE_INFINITY }],
@@ -511,7 +541,11 @@ describe("fuzz: synthetic trees stay internally consistent", () => {
       expect(replay.revealedObservations().map((o) => o.id)).toEqual(
         env.revealedObservations().map((o) => o.id)
       );
-      const second = scoreReplay(tree, replay, "p", { beta1: 0.002, beta2: 0.01, normalize: "none" });
+      const second = scoreReplay(tree, replay, "p", {
+        beta1: 0.002,
+        beta2: 0.01,
+        normalize: "none"
+      });
       expect(second.score).toBeCloseTo(first.score, 12);
     })
   );

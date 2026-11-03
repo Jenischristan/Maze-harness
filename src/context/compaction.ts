@@ -59,8 +59,7 @@ export function projectTokens(messages: ChatMessage[]): number {
 }
 
 export function shouldCompact(messages: ChatMessage[], cfg: CompactionConfig): boolean {
-  const threshold =
-    cfg.threshold ?? Math.max(1024, cfg.contextWindow - cfg.reserveTokens);
+  const threshold = cfg.threshold ?? Math.max(1024, cfg.contextWindow - cfg.reserveTokens);
   // Leave headroom for the heuristic's error in the other direction: the
   // estimate under-counts CJK/code, so compact slightly before the raw number
   // says we must.

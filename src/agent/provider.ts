@@ -6,8 +6,9 @@ import type {
   ToolDefinition,
   Usage
 } from "../types.js";
-import { estimateTokens } from "../context/compaction.js";
-import { formatSummaryPrompt } from "../context/compaction.js";
+import { estimateTokens, formatSummaryPrompt } from "../context/compaction.js";
+import { CircuitBreaker, withRetry, isRetryableError } from "../util/retry.js";
+import { redact } from "../util/redact.js";
 
 export interface OpenAICompatConfig {
   baseUrl: string;
@@ -113,6 +114,8 @@ export class OpenAICompatProvider implements ChatProvider {
   readonly model: string;
   readonly contextWindow: number;
   private readonly cfg: OpenAICompatConfig;
+  /** Opens after repeated transient failures so a dead endpoint fails fast. */
+  private readonly breaker = new CircuitBreaker(5, 30_000);
 
   constructor(cfg: OpenAICompatConfig) {
     this.cfg = cfg;
@@ -157,45 +160,65 @@ export class OpenAICompatProvider implements ChatProvider {
     return out;
   }
 
+  /**
+   * POST once, then retry through the shared policy.
+   *
+   * The old loop hard-coded its own retryable-status list, had no configurable
+   * budget and no circuit breaker, and formatted a raw provider body into the
+   * error (which could echo an Authorization header). Retries now share one
+   * policy with jitter, a bounded budget, and a breaker; the error text is
+   * redacted and status-tagged so `isRetryableError` can classify it.
+   */
   private async post(body: unknown, signal?: AbortSignal): Promise<ChatCompletionResponse> {
     const fetchImpl = this.cfg.fetchImpl ?? fetch;
-    const retries = this.cfg.retries ?? 6;
     const requestTimeoutMs = this.cfg.requestTimeoutMs ?? 120_000;
-    let lastError = "";
-    for (let attempt = 0; attempt < retries; attempt += 1) {
-      if (signal?.aborted) throw new Error("aborted");
-      // Per-attempt deadline so a socket that is accepted but never responds
-      // cannot hang the loop (and the "running" state) forever. Combine
-      // the caller's signal with the timeout.
-      const timeout = AbortSignal.timeout(requestTimeoutMs);
-      const attemptSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-      let res: Response;
-      try {
-        res = await fetchImpl(this.cfg.baseUrl, {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify(body),
-          signal: attemptSignal
-        });
-      } catch (err) {
-        if (signal?.aborted) throw new Error("aborted");
-        lastError = timeout.aborted
-          ? `request timed out after ${requestTimeoutMs}ms`
-          : err instanceof Error
-            ? err.message
-            : String(err);
-        await sleep(jitter((this.cfg.retryBaseMs ?? 1500) * 2 ** attempt), signal);
-        continue;
-      }
-      if (res.ok) return (await res.json()) as ChatCompletionResponse;
-      const text = await res.text().catch(() => "");
-      lastError = `provider ${res.status}: ${text.slice(0, 500)}`;
-      const retryable =
-        res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504;
-      if (!retryable) throw new Error(lastError);
-      await sleep(jitter((this.cfg.retryBaseMs ?? 1500) * 2 ** attempt), signal);
+    this.breaker.assertClosed();
+    try {
+      const data = await withRetry(
+        async () => {
+          // Per-attempt deadline so a socket that is accepted but never
+          // responds cannot hang the loop forever.
+          const timeout = AbortSignal.timeout(requestTimeoutMs);
+          const attemptSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+          let res: Response;
+          try {
+            res = await fetchImpl(this.cfg.baseUrl, {
+              method: "POST",
+              headers: this.headers(),
+              body: JSON.stringify(body),
+              signal: attemptSignal
+            });
+          } catch (err) {
+            if (signal?.aborted) throw new Error("aborted");
+            if (timeout.aborted) {
+              throw Object.assign(new Error(`request timed out after ${requestTimeoutMs}ms`), {
+                status: 408
+              });
+            }
+            throw err;
+          }
+          if (res.ok) return (await res.json()) as ChatCompletionResponse;
+          const text = await res.text().catch(() => "");
+          throw Object.assign(new Error(`provider ${res.status}: ${redact(text.slice(0, 500))}`), {
+            status: res.status
+          });
+        },
+        {
+          maxAttempts: this.cfg.retries ?? 6,
+          baseDelayMs: this.cfg.retryBaseMs ?? 1500,
+          maxDelayMs: 30_000,
+          retryable: isRetryableError,
+          signal
+        }
+      );
+      this.breaker.recordSuccess();
+      return data;
+    } catch (err) {
+      // Only count transient failures toward the breaker; a 400 is a caller bug
+      // and must not open the circuit for a healthy endpoint.
+      if (isRetryableError(err)) this.breaker.recordFailure();
+      throw err;
     }
-    throw new Error(`provider retries exhausted: ${lastError}`);
   }
 
   async complete(
@@ -318,7 +341,8 @@ export class ScriptedProvider implements ChatProvider {
       if (m.role === "tool" && m.name) files.add(m.name);
       if (m.role === "assistant") {
         for (const c of m.toolCalls ?? []) {
-          if (c.name === "bash" && typeof c.arguments.command === "string") commands.push(c.arguments.command);
+          if (c.name === "bash" && typeof c.arguments.command === "string")
+            commands.push(c.arguments.command);
         }
       }
     }
@@ -343,7 +367,8 @@ export interface ProviderSpec {
 export function makeProvider(spec: ProviderSpec): ChatProvider {
   if (spec.kind === "scripted") return new ScriptedProvider({ model: spec.model });
   return new OpenAICompatProvider({
-    baseUrl: spec.baseUrl ?? process.env.DREAM_BASE_URL ?? "http://127.0.0.1:8788/v1/chat/completions",
+    baseUrl:
+      spec.baseUrl ?? process.env.DREAM_BASE_URL ?? "http://127.0.0.1:8788/v1/chat/completions",
     apiKey: spec.apiKey ?? process.env.DREAM_API_KEY ?? process.env.DEEPSEEK_ROUTER_KEY,
     model: spec.model ?? process.env.DREAM_AGENT_MODEL ?? "deepseek-chat",
     contextWindow: spec.contextWindow

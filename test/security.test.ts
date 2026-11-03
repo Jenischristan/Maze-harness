@@ -109,7 +109,10 @@ describe("CTX-001 / SESS-001: compaction shrinks the projection", () => {
       });
     }
     const before = store.projection();
-    const tokensBefore = before.reduce((n: number, m: ChatMessage) => n + estimateTokens(m.content), 0);
+    const tokensBefore = before.reduce(
+      (n: number, m: ChatMessage) => n + estimateTokens(m.content),
+      0
+    );
 
     const result = await compact(
       before,
@@ -127,7 +130,10 @@ describe("CTX-001 / SESS-001: compaction shrinks the projection", () => {
     expect(after.some((m) => m.content.includes("SUMMARY"))).toBe(true);
     expect(after.some((m) => m.content === "the original task")).toBe(true);
     expect(after.length).toBeLessThan(before.length);
-    const tokensAfter = after.reduce((n: number, m: ChatMessage) => n + estimateTokens(m.content), 0);
+    const tokensAfter = after.reduce(
+      (n: number, m: ChatMessage) => n + estimateTokens(m.content),
+      0
+    );
     expect(tokensAfter).toBeLessThan(tokensBefore);
   });
 });

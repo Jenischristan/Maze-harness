@@ -4,10 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAgentLoop, contextUsage } from "../src/agent/loop.js";
-import {
-  OpenAICompatProvider,
-  ScriptedProvider
-} from "../src/agent/provider.js";
+import { OpenAICompatProvider, ScriptedProvider } from "../src/agent/provider.js";
 import { ToolExecutor, ToolRegistry } from "../src/tools/index.js";
 import { Hooks } from "../src/tools/hooks.js";
 import { DEFAULT_PERMISSION_POLICY } from "../src/tools/permissions.js";
@@ -113,10 +110,7 @@ describe("agent loop", () => {
   });
 
   it("reports context usage", () => {
-    const usage = contextUsage(
-      [{ role: "user", content: "x".repeat(400) }],
-      1000
-    );
+    const usage = contextUsage([{ role: "user", content: "x".repeat(400) }], 1000);
     expect(usage.tokens).toBeGreaterThan(0);
     expect(usage.pct).toBeGreaterThan(0);
   });
@@ -164,8 +158,7 @@ describe("OpenAI-compatible provider", () => {
   });
 
   it("surfaces non-retryable provider errors", async () => {
-    const fetchImpl = (async () =>
-      new Response("bad request", { status: 400 })) as typeof fetch;
+    const fetchImpl = (async () => new Response("bad request", { status: 400 })) as typeof fetch;
     const provider = new OpenAICompatProvider({
       baseUrl: "http://test",
       model: "m",

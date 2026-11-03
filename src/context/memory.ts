@@ -40,8 +40,6 @@ export async function loadMemory(root: string): Promise<MemoryBundle> {
     const content = await readFile(path, "utf8").catch(() => "");
     if (content.trim().length > 0) files.push({ path, content: content.trim() });
   }
-  const text = files
-    .map((f) => `<!-- ${f.path} -->\n${f.content}`)
-    .join("\n\n");
+  const text = files.map((f) => `<!-- ${f.path} -->\n${f.content}`).join("\n\n");
   return { files, text };
 }

@@ -12,6 +12,9 @@ import { DEFAULT_SCORE_CONFIG } from "./score.js";
 import { makeProvider } from "./agent/provider.js";
 import { DEFAULT_PERMISSION_POLICY, type PermissionPolicy } from "./tools/permissions.js";
 import { versionFromCli } from "./cli-version.js";
+import { parseCommandSpec } from "./util/args.js";
+import { configureLoggingFromEnv } from "./util/logger.js";
+import { resolveConfig } from "./config.js";
 import type { ReplayScoreConfig, TaskSpec } from "./types.js";
 
 const program = new Command();
@@ -62,6 +65,13 @@ interface CommonOpts {
   apiKey: string;
   contextWindow: string;
   maxTurns: string;
+  resume?: boolean;
+  maxTokens?: string;
+  maxWallMs?: string;
+  maxUsd?: string;
+  maxToolCalls?: string;
+  logLevel?: string;
+  logFormat?: string;
 }
 
 function parseScoreConfig(o: CommonOpts): ReplayScoreConfig {
@@ -124,16 +134,66 @@ function parseBetaGrid(raw: string | undefined): readonly number[] | null | unde
 }
 
 function parseTask(o: CommonOpts): TaskSpec {
+  // `split(" ")` broke any evaluator path containing a space and left quote
+  // characters in argv. `parseCommandSpec` accepts a shell-like string with
+  // quoting or a JSON argv array, and never invokes a shell.
+  let evaluatorCommand: string[];
+  try {
+    evaluatorCommand = parseCommandSpec(o.evaluator);
+  } catch (err) {
+    process.stderr.write(
+      `invalid --evaluator: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    process.exit(2);
+  }
   return {
     name: "cli-task",
     description: "task supplied via CLI",
     prompt: o.task,
     initProgramPath: resolve(o.initDir),
-    evaluatorCommand: o.evaluator.split(" "),
+    evaluatorCommand,
     evaluatorTimeoutMs: num("evaluator-timeout", o.evaluatorTimeout),
     agentTimeoutMs: num("agent-timeout", o.agentTimeout),
     verifyCommands: collectVerify(o)
   };
+}
+
+/**
+ * Build the per-task budget from the optional `--max-*` flags. Omitted flags
+ * leave the corresponding limit unset (no cap), so the default behaviour is
+ * unchanged and a caller opts into each ceiling explicitly.
+ */
+function budgetFrom(o: CommonOpts): {
+  maxTokens?: number;
+  maxWallMs?: number;
+  maxUsd?: number;
+  maxToolCalls?: number;
+} {
+  const budget: {
+    maxTokens?: number;
+    maxWallMs?: number;
+    maxUsd?: number;
+    maxToolCalls?: number;
+  } = {};
+  if (o.maxTokens !== undefined) budget.maxTokens = positiveInt("max-tokens", o.maxTokens);
+  if (o.maxWallMs !== undefined) budget.maxWallMs = positiveInt("max-wall-ms", o.maxWallMs);
+  if (o.maxUsd !== undefined) budget.maxUsd = num("max-usd", o.maxUsd);
+  if (o.maxToolCalls !== undefined) {
+    budget.maxToolCalls = positiveInt("max-tool-calls", o.maxToolCalls);
+  }
+  return budget;
+}
+
+/** Parse a command flag that may be a quoted string or a JSON argv array. */
+function commandFlag(name: string, raw: string): string[] {
+  try {
+    return parseCommandSpec(raw);
+  } catch (err) {
+    process.stderr.write(
+      `invalid --${name}: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    process.exit(2);
+  }
 }
 
 function collectVerify(o: CommonOpts): string[] {
@@ -233,7 +293,10 @@ function commonOptions(cmd: Command): Command {
       "baked-in beta for the first live cycle (later cycles follow the live-manifest rule; 'off' disables beta selection)"
     )
     .option("--max-branches <n>", "hard cap on planned grid branches (default: --workers)")
-    .option("--max-refines <n>", "hard cap on planned refinements per branch (default: --round-limit)")
+    .option(
+      "--max-refines <n>",
+      "hard cap on planned refinements per branch (default: --round-limit)"
+    )
     .option("--normalize <mode>", "relativeToBaseline | none", "relativeToBaseline")
     .option("--sandbox-timeout <ms>", "per policy-tree replay timeout", "5000")
     .option("--sandbox-memory <mb>", "per replay child memory limit", "256")
@@ -249,14 +312,36 @@ function commonOptions(cmd: Command): Command {
     .option("--runs-dir <dir>", "directory for run state", "runs")
     .option("--seed <n>", "deterministic scripted-agent seed", "1")
     .option("--holdout-last", "exclude newest tree from selection", false)
+    .option("--no-resume", "start over instead of continuing a run at its last completed round")
+    .option("--max-tokens <n>", "hard token budget per agent task (default: unlimited)")
+    .option("--max-wall-ms <n>", "hard wall-clock budget per agent task in ms (default: unlimited)")
+    .option("--max-usd <n>", "hard estimated USD budget per agent task (default: unlimited)")
+    .option("--max-tool-calls <n>", "hard tool-call budget per agent task (default: unlimited)")
+    .option(
+      "--log-level <level>",
+      "debug | info | warn | error (default: $DREAM_LOG_LEVEL or info)"
+    )
+    .option("--log-format <fmt>", "text | json (default: $DREAM_LOG_FORMAT or text)")
     .option("--agent <mode>", "discovery agent: scripted | cli | deepseek | tool", "scripted")
     .option("--agent-command <cmd>", "coding-agent CLI command (used with --agent cli)", "")
     .option("--agent-prompt-mode <mode>", "stdin | arg", "stdin")
     .option("--developer <mode>", "policy developer: fake | cli", "fake")
-    .option("--developer-command <cmd>", "policy-developer CLI command (used with --developer cli)", "")
+    .option(
+      "--developer-command <cmd>",
+      "policy-developer CLI command (used with --developer cli)",
+      ""
+    )
     .option("--developer-prompt-mode <mode>", "stdin | arg", "stdin")
-    .option("--developer-prompt <path>", "policy-developer prompt file", "prompts/policy-developer.md")
-    .option("--task <text>", "task prompt given to the discovery agent", "Improve the program according to the evaluator.")
+    .option(
+      "--developer-prompt <path>",
+      "policy-developer prompt file",
+      "prompts/policy-developer.md"
+    )
+    .option(
+      "--task <text>",
+      "task prompt given to the discovery agent",
+      "Improve the program according to the evaluator."
+    )
     .option(
       "--verify <cmd>",
       "verification command run after edits (repeatable; ';;' separates multiple)",
@@ -265,7 +350,11 @@ function commonOptions(cmd: Command): Command {
     )
     .option("--permission <mode>", "allow | ask | deny for unmatched commands", "allow")
     .option("--model <name>", "model for the tool agent / chat", "deepseek-chat")
-    .option("--base-url <url>", "OpenAI-compatible endpoint", "http://127.0.0.1:8788/v1/chat/completions")
+    .option(
+      "--base-url <url>",
+      "OpenAI-compatible endpoint",
+      "http://127.0.0.1:8788/v1/chat/completions"
+    )
     .option("--api-key <key>", "API key for the endpoint", "")
     .option("--context-window <n>", "model context window in tokens", "128000")
     .option("--max-turns <n>", "max agent turns per attempt", "40");
@@ -282,6 +371,15 @@ function makeToolProvider(o: CommonOpts) {
 }
 
 async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void> {
+  // Logging is configured before anything can emit: flag > env > default.
+  configureLoggingFromEnv(process.env);
+  if (opts.logLevel !== undefined || opts.logFormat !== undefined) {
+    const resolved = resolveConfig({ logLevel: opts.logLevel, logFormat: opts.logFormat });
+    configureLoggingFromEnv({
+      DREAM_LOG_LEVEL: resolved.logLevel,
+      DREAM_LOG_FORMAT: resolved.logFormat
+    });
+  }
   const runId = opts.runId ?? `${mode}-${randomUUID().slice(0, 8)}`;
   const repoDir = resolve(opts.repo);
   await mkdir(repoDir, { recursive: true });
@@ -327,7 +425,9 @@ async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void>
     developer: await buildDeveloper(opts),
     seedPolicy: seed,
     rounds: positiveInt("rounds", opts.rounds),
-    revisions: positiveInt("revisions", opts.revisions),
+    // Zero revisions is meaningful: evaluate the incumbent only and select it.
+    // `runOfflinePhase` already handles `revisions = 0` by looping zero times.
+    revisions: nonNegativeInt("revisions", opts.revisions),
     maxParallelism: positiveInt("workers", opts.workers),
     roundsLimit: positiveInt("round-limit", opts.roundLimit),
     scoreConfig: parseScoreConfig(opts),
@@ -350,6 +450,7 @@ async function runLoop(mode: "dream" | "fixed", opts: CommonOpts): Promise<void>
       memoryMb: num("sandbox-memory", opts.sandboxMemory)
     },
     holdoutLast: Boolean(opts.holdoutLast),
+    resume: opts.resume !== false,
     mode,
     runRoot: resolve(opts.runsDir),
     onEvent: log
@@ -375,7 +476,8 @@ async function buildAgent(
       runsDir: resolve(opts.runsDir),
       maxTurns: positiveInt("max-turns", opts.maxTurns),
       contextWindow: positiveInt("context-window", opts.contextWindow),
-      permission: permissionPolicy(opts.permission)
+      permission: permissionPolicy(opts.permission),
+      budget: budgetFrom(opts)
     });
   }
   if (opts.agent === "cli" || opts.agent === "deepseek") {
@@ -383,7 +485,7 @@ async function buildAgent(
     const command =
       opts.agent === "deepseek"
         ? [resolve("agents/deepseek-agent.mjs")]
-        : opts.agentCommand.split(" ").filter((s) => s.length > 0);
+        : commandFlag("agent-command", opts.agentCommand);
     if (command.length === 0) {
       throw new Error("--agent cli requires --agent-command");
     }
@@ -397,16 +499,14 @@ async function buildAgent(
   return new ScriptedAgent({ seed: num("seed", opts.seed), failRate: 0.1 });
 }
 
-async function buildDeveloper(
-  opts: CommonOpts
-): Promise<import("./types.js").PolicyDeveloper> {
+async function buildDeveloper(opts: CommonOpts): Promise<import("./types.js").PolicyDeveloper> {
   if (opts.developer === "cli") {
     const { CliPolicyDeveloper } = await import("./developer/cli.js");
     if (!opts.developerCommand.trim()) {
       throw new Error("--developer cli requires --developer-command");
     }
     return new CliPolicyDeveloper({
-      command: opts.developerCommand.split(" ").filter((s) => s.length > 0),
+      command: commandFlag("developer-command", opts.developerCommand),
       promptMode: opts.developerPromptMode === "arg" ? "arg" : "stdin",
       promptPath: resolve(opts.developerPrompt),
       workDir: resolve(opts.runsDir, "_developer")
@@ -419,15 +519,17 @@ async function buildDeveloper(
   return new FakePolicyDeveloper({ variants: [greedy.source, fixed.source] });
 }
 
-commonOptions(program.command("dream").description("run the Dream-RSI loop"))
-  .action(async (_o: unknown, cmd: Command) => {
+commonOptions(program.command("dream").description("run the Dream-RSI loop")).action(
+  async (_o: unknown, cmd: Command) => {
     await runLoop("dream", cmd.opts<CommonOpts>());
-  });
+  }
+);
 
-commonOptions(program.command("fixed").description("run with a frozen policy"))
-  .action(async (_o: unknown, cmd: Command) => {
+commonOptions(program.command("fixed").description("run with a frozen policy")).action(
+  async (_o: unknown, cmd: Command) => {
     await runLoop("fixed", cmd.opts<CommonOpts>());
-  });
+  }
+);
 
 program
   .command("chat")
@@ -435,20 +537,55 @@ program
   .option("--message <text>", "message (otherwise taken from positional args)")
   .argument("[words...]", "message words")
   .option("--model <name>", "model", "deepseek-chat")
-  .option("--base-url <url>", "OpenAI-compatible endpoint", "http://127.0.0.1:8788/v1/chat/completions")
+  .option(
+    "--base-url <url>",
+    "OpenAI-compatible endpoint",
+    "http://127.0.0.1:8788/v1/chat/completions"
+  )
   .option("--api-key <key>", "API key", "")
   .option("--context-window <n>", "context window", "128000")
   .option("--max-turns <n>", "max agent turns", "40")
   .option("--runs-dir <dir>", "directory for sessions", "runs")
   .option("--verify <cmd>", "verification command (repeatable)", collect, [])
   .option("--permission <mode>", "allow | ask | deny", "allow")
+  .option("--max-tokens <n>", "hard token budget for the task")
+  .option("--max-wall-ms <n>", "hard wall-clock budget in ms")
+  .option("--max-usd <n>", "hard estimated USD budget")
+  .option("--max-tool-calls <n>", "hard tool-call budget")
+  .option("--log-level <level>", "debug | info | warn | error")
+  .option("--log-format <fmt>", "text | json")
   .action(async (words: string[], o: Record<string, unknown>) => {
+    configureLoggingFromEnv(process.env);
+    if (o.logLevel !== undefined || o.logFormat !== undefined) {
+      const resolved = resolveConfig({
+        logLevel: o.logLevel === undefined ? undefined : String(o.logLevel),
+        logFormat: o.logFormat === undefined ? undefined : String(o.logFormat)
+      });
+      configureLoggingFromEnv({
+        DREAM_LOG_LEVEL: resolved.logLevel,
+        DREAM_LOG_FORMAT: resolved.logFormat
+      });
+    }
     const { runChatOnce } = await import("./chat.js");
     const positional = Array.isArray(words) ? words.join(" ") : "";
     const message = String(o.message ?? positional);
     if (!message.trim()) {
       process.stderr.write("usage: dream-harness chat <message>\n");
       process.exit(1);
+    }
+    const budget: {
+      maxTokens?: number;
+      maxWallMs?: number;
+      maxUsd?: number;
+      maxToolCalls?: number;
+    } = {};
+    if (o.maxTokens !== undefined)
+      budget.maxTokens = positiveInt("max-tokens", String(o.maxTokens));
+    if (o.maxWallMs !== undefined)
+      budget.maxWallMs = positiveInt("max-wall-ms", String(o.maxWallMs));
+    if (o.maxUsd !== undefined) budget.maxUsd = num("max-usd", String(o.maxUsd));
+    if (o.maxToolCalls !== undefined) {
+      budget.maxToolCalls = positiveInt("max-tool-calls", String(o.maxToolCalls));
     }
     await runChatOnce({
       message,
@@ -459,7 +596,8 @@ program
       maxTurns: positiveInt("max-turns", String(o.maxTurns)),
       runsDir: resolve(String(o.runsDir)),
       verifyCommands: (o.verify as string[]) ?? [],
-      permission: String(o.permission)
+      permission: String(o.permission),
+      budget
     });
   });
 
@@ -471,7 +609,9 @@ program
   .action(async (o: { runsDir: string; json?: boolean }) => {
     const { listRuns, renderComparison } = await import("./runs/report.js");
     const runs = await listRuns(resolve(o.runsDir));
-    process.stdout.write(o.json ? `${JSON.stringify(runs, null, 2)}\n` : `${renderComparison(runs)}\n`);
+    process.stdout.write(
+      o.json ? `${JSON.stringify(runs, null, 2)}\n` : `${renderComparison(runs)}\n`
+    );
   });
 
 program
@@ -519,7 +659,10 @@ program
     }
     const store = new SessionStore({
       dir: dirname(path),
-      runId: path.split("/").pop()?.replace(/\.jsonl$/, "")
+      runId: path
+        .split("/")
+        .pop()
+        ?.replace(/\.jsonl$/, "")
     });
     await store.init();
     if (o.json) {
@@ -554,7 +697,10 @@ program
     const provider = makeProvider({ kind: "openai", baseUrl: o.baseUrl, model: o.model });
     const store = new SessionStore({
       dir: dirname(path),
-      runId: path.split("/").pop()?.replace(/\.jsonl$/, "")
+      runId: path
+        .split("/")
+        .pop()
+        ?.replace(/\.jsonl$/, "")
     });
     await store.init();
     const result = await compact(store.projection(), provider, {

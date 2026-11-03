@@ -48,7 +48,10 @@ export interface DefaultHooksOptions {
  * Build a HookRegistry from verification commands (test/typecheck/lint).
  * Hooks run after every mutating tool call so the agent gets immediate feedback.
  */
-export function makeDefaultHooks(commands: string[], opts: DefaultHooksOptions): HookRegistry & {
+export function makeDefaultHooks(
+  commands: string[],
+  opts: DefaultHooksOptions
+): HookRegistry & {
   runAll(signal?: AbortSignal): Promise<HookResult[]>;
 } {
   const hooks = new Hooks({
@@ -67,14 +70,9 @@ export function makeDefaultHooks(commands: string[], opts: DefaultHooksOptions):
   return hooks;
 }
 
-export async function writeTranscript(
-  dir: string,
-  name: string,
-  content: string
-): Promise<string> {
+export async function writeTranscript(dir: string, name: string, content: string): Promise<string> {
   await mkdir(dir, { recursive: true });
   const path = join(dir, name);
   await writeFile(path, content, "utf8");
   return path;
 }
-

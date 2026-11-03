@@ -10,14 +10,7 @@ import type { ToolCall, ToolResult } from "./tool.js";
 export interface SessionEntry {
   id: string;
   parentId: string | null;
-  kind:
-    | "header"
-    | "message"
-    | "tool_call"
-    | "tool_result"
-    | "compaction"
-    | "checkpoint"
-    | "note";
+  kind: "header" | "message" | "tool_call" | "tool_result" | "compaction" | "checkpoint" | "note";
   timestamp: string;
   message?: ChatMessage;
   toolCall?: ToolCall;

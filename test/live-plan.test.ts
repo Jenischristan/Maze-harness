@@ -66,9 +66,7 @@ async function makeEnv(plan: { branchCount: number; refineCount: number }) {
 describe("live grid plan is a hard bound", () => {
   it("rejects opening more roots than the plan allows", async () => {
     const env = await makeEnv({ branchCount: 2, refineCount: 2 });
-    await expect(env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID])).rejects.toThrow(
-      /plan allows 2/
-    );
+    await expect(env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID])).rejects.toThrow(/plan allows 2/);
     const opened = await env.probeBatch([ROOT_ID, ROOT_ID]);
     expect(opened).toHaveLength(2);
   });

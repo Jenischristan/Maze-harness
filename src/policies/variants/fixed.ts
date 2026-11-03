@@ -31,11 +31,20 @@ export default class FixedParallelRefine {
   private readonly branches: number;
   private readonly refinements: number;
   private readonly beta: number;
+  private plan: { branchCount: number; refineCount: number } | null = null;
 
-  constructor(config?: { branches?: number; refinements?: number; beta?: number }) {
+  constructor(config?: {
+    branches?: number;
+    refinements?: number;
+    beta?: number;
+    plan?: { branchCount: number; refineCount: number };
+  }) {
     this.beta = Math.max(0, Math.min(1, config?.beta ?? 0.6));
     this.branches = Math.max(1, config?.branches ?? 3);
     this.refinements = Math.max(0, config?.refinements ?? 2);
+    if (config?.plan) {
+      this.plan = { branchCount: config.plan.branchCount, refineCount: config.plan.refineCount };
+    }
   }
 
   /**
@@ -58,7 +67,9 @@ export default class FixedParallelRefine {
    * arrive late on a stable set of branches, bootstrap conservatively when
    * history is thin. Always returns a plan.
    */
-  planGrid(context: import("../../types.js").GridPlanningContext): import("../../types.js").GridPlan {
+  planGrid(
+    context: import("../../types.js").GridPlanningContext
+  ): import("../../types.js").GridPlan {
     const hardB = Math.max(1, context.hardMaxBranchCount);
     const hardR = Math.max(0, context.hardMaxRefineCount);
     const fallbackB = Math.min(hardB, Math.max(1, context.fallbackBranchCount));
@@ -74,13 +85,18 @@ export default class FixedParallelRefine {
           " completed live cycle(s), so use the conservative fallback width/depth"
       };
     }
-    const last = history[history.length - 1] as import("../../types.js").GridPlanningContext["history"][number];
-    const prev = history[history.length - 2] as import("../../types.js").GridPlanningContext["history"][number];
+    const last = history[
+      history.length - 1
+    ] as import("../../types.js").GridPlanningContext["history"][number];
+    const prev = history[
+      history.length - 2
+    ] as import("../../types.js").GridPlanningContext["history"][number];
     const bestLast = last.bestScore === null ? -Infinity : last.bestScore;
     const bestPrev = prev.bestScore === null ? -Infinity : prev.bestScore;
     const improving = bestLast > bestPrev;
     let rootChildren = 1;
-    for (const r of context.replaySupport) rootChildren = Math.max(rootChildren, r.traceBranchCount);
+    for (const r of context.replaySupport)
+      rootChildren = Math.max(rootChildren, r.traceBranchCount);
     let maxRefine = 0;
     for (const r of context.replaySupport) maxRefine = Math.max(maxRefine, r.traceRefineCount);
     if (!improving && last.maxAttempt >= prev.maxAttempt) {
@@ -114,8 +130,16 @@ export default class FixedParallelRefine {
     const legalRoots = env.legalRoots();
     const openCap = Number.isFinite(legalRoots) ? Math.max(1, legalRoots) : this.branches;
     const s = this.schedule(env.maxParallelism, openCap);
-    const wantBranches = Math.min(s.branches, this.branches);
-    const wantRefines = Math.min(s.refinements, this.refinements);
+    // The runner's effective plan is a hard bound (paper Appendix B.2): width
+    // never exceeds it, and the refine cap bounds each branch's attempts. The
+    // plan arrives through the constructor, so it also applies in replay where
+    // `planGrid` is never called.
+    const plan = this.plan;
+    const wantBranches = plan
+      ? Math.min(plan.branchCount, s.branches, this.branches)
+      : Math.min(s.branches, this.branches);
+    const refineCap = plan ? Math.min(plan.refineCount, this.refinements) : this.refinements;
+    const wantRefines = Math.min(s.refinements, refineCap);
     for (let attempt = 0; attempt < Math.max(1, wantRefines); attempt += 1) {
       if (env.done || env.roundsRemaining <= 0) return;
       const batch = this.nextBatch(env, wantBranches, wantRefines, s.stopBelowBaseline);
@@ -162,7 +186,10 @@ export default class FixedParallelRefine {
         if (!stopBelowBaseline) return true;
         return (leaf.deltaVsBaseline === null ? -Infinity : leaf.deltaVsBaseline) > 0;
       })
-      .sort((a, b) => (b.score === null ? -Infinity : b.score) - (a.score === null ? -Infinity : a.score))
+      .sort(
+        (a, b) =>
+          (b.score === null ? -Infinity : b.score) - (a.score === null ? -Infinity : a.score)
+      )
       .slice(0, slots)
       .map((leaf) => leaf.id);
     const remaining = slots - refine.length;
@@ -170,7 +197,9 @@ export default class FixedParallelRefine {
     return [...refine, ...this.openBranches(env, branches).slice(0, remaining)];
   }
 
-  private frontier(env: import("../../types.js").ExplorationEnv): import("../../types.js").Observation[] {
+  private frontier(
+    env: import("../../types.js").ExplorationEnv
+  ): import("../../types.js").Observation[] {
     const observed = env.observed();
     const parents = new Set<string>();
     for (const obs of observed.values()) parents.add(obs.parentId);

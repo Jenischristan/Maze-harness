@@ -23,10 +23,7 @@ export interface TextSink {
   flush(): string;
 }
 
-export function collectText(
-  stream: Readable,
-  opts: { cap?: number } = {}
-): TextSink {
+export function collectText(stream: Readable, opts: { cap?: number } = {}): TextSink {
   const decoder = new StringDecoder("utf8");
   const cap = opts.cap ?? Infinity;
   let text = "";

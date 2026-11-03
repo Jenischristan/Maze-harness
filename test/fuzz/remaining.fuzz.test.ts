@@ -56,7 +56,11 @@ describe("tools/hookTypes contract", () => {
   it("Hooks satisfies HookRegistry and preserves spec fields", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dh-fuzz-hooktypes-"));
     try {
-      const hooks: HookRegistry = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 1024 });
+      const hooks: HookRegistry = new Hooks({
+        workspaceDir: dir,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024
+      });
       const spec: VerifyHook = { name: "n", command: "exit 0", timeoutMs: 1000, env: { X: "1" } };
       hooks.register(spec);
       expect(hooks.list()).toEqual([spec]);
@@ -126,7 +130,9 @@ describe("cli-version", () => {
   it("resolves the real package version", async () => {
     const v = await versionFromCli();
     expect(v).toMatch(/^\d+\.\d+\.\d+/);
-    const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as {
+    const pkg = JSON.parse(
+      await readFile(new URL("../../package.json", import.meta.url), "utf8")
+    ) as {
       version: string;
     };
     expect(v).toBe(pkg.version);
@@ -242,14 +248,22 @@ describe("fuzz: subagents", () => {
   it(
     "delegate tool rejects unknown agents and empty tasks without spawning",
     fuzzCases({ seed: 0x1006, runs: 100 }, async (rng) => {
-      const tool = subAgentTool({ workspaceDir: "/tmp", model: "m", baseUrl: "http://x", apiKey: "k" });
+      const tool = subAgentTool({
+        workspaceDir: "/tmp",
+        model: "m",
+        baseUrl: "http://x",
+        apiKey: "k"
+      });
       expect(tool.name).toBe("delegate");
       const badAgent = await tool.execute({ agent: rng.str(12), task: "x" }, {} as never);
       if (badAgent.error === "unknown-subagent") {
         expect(badAgent.ok).toBe(false);
         expect(badAgent.content).toContain("available:");
       }
-      const noTask = await tool.execute({ agent: rng.pick(SUBAGENTS).name, task: "   " }, {} as never);
+      const noTask = await tool.execute(
+        { agent: rng.pick(SUBAGENTS).name, task: "   " },
+        {} as never
+      );
       expect(noTask.ok).toBe(false);
       expect(noTask.error).toBe("no-task");
     })
@@ -283,22 +297,23 @@ describe("fuzz: fetch pre-flight validation", () => {
     // Every case must be decided by pre-flight validation. Never include a
     // URL that could pass the allowlist, or the test would open a socket.
     fuzzCases({ seed: 0x1007, runs: 200 }, async (rng) => {
-      const invalid = rng.pick([
-        "",
-        "not a url",
-        "example.com",
-        "://",
-        "https://",
-        "http://[bad"
-      ]);
+      const invalid = rng.pick(["", "not a url", "example.com", "://", "https://", "http://[bad"]);
       const inputs: Array<[Record<string, unknown>, PermissionPolicy, string]> = [
         [{ url: invalid }, allowLocal, "bad-url"],
         [{ url: "file:///etc/passwd" }, allowLocal, "bad-protocol"],
         [{ url: "ftp://example.com/x" }, allowLocal, "bad-protocol"],
         [{ url: `https://evil${rng.int(0, 9)}.com/x` }, allowLocal, "network-denied"],
         [{ url: "https://sub.evil.com/x" }, allowLocal, "network-denied"],
-        [{ url: "https://example.com/x" }, { ...allowLocal, networkEnabled: false }, "network-denied"],
-        [{ url: "https://example.com/x" }, { ...allowLocal, networkAllowlist: [] }, "network-denied"]
+        [
+          { url: "https://example.com/x" },
+          { ...allowLocal, networkEnabled: false },
+          "network-denied"
+        ],
+        [
+          { url: "https://example.com/x" },
+          { ...allowLocal, networkAllowlist: [] },
+          "network-denied"
+        ]
       ];
       for (const [args, policy, expectedError] of inputs) {
         const res = await fetchTool.execute(args, ctx(policy));

@@ -53,9 +53,9 @@ describe("live/replay legality parity", () => {
   it("rejects a batch larger than maxParallelism", async () => {
     const env = new ReplayEnv(tree(), { maxRounds: 6 });
     // probeBatch is async, so the illegal batch surfaces as a rejection.
-    await expect(
-      env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID])
-    ).rejects.toThrow(IllegalBatchError);
+    await expect(env.probeBatch([ROOT_ID, ROOT_ID, ROOT_ID, ROOT_ID])).rejects.toThrow(
+      IllegalBatchError
+    );
   });
 
   it("rejects duplicates and non-eligible ids", async () => {
@@ -140,11 +140,7 @@ describe("replay objective", () => {
       timedOut: false,
       wallMs: 0
     }));
-    const mean = meanScoreOverGrid(
-      reports,
-      { beta1: 0, beta2: 0, normalize: "none" },
-      () => 0
-    );
+    const mean = meanScoreOverGrid(reports, { beta1: 0, beta2: 0, normalize: "none" }, () => 0);
     expect(Number.isFinite(mean)).toBe(true);
     expect(RHO_GRID.length).toBeGreaterThan(1);
   });

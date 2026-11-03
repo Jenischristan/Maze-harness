@@ -1,10 +1,5 @@
 import { TreeIndex, ROOT_ID, toObservation, withBranchSignals } from "../tree.js";
-import type {
-  DiscoveryTree,
-  ExplorationEnv,
-  Observation,
-  TreeSummary
-} from "../types.js";
+import type { DiscoveryTree, ExplorationEnv, Observation, TreeSummary } from "../types.js";
 
 export class IllegalBatchError extends Error {}
 
@@ -39,7 +34,6 @@ export class ReplayEnv implements ExplorationEnv {
   private readonly batches: string[][] = [];
   private roundsUsed = 0;
   private doneFlag = false;
-  private scoreOfRoot: number | null = null;
 
   constructor(tree: DiscoveryTree, opts: ReplayEnvOptions = {}) {
     this.index = new TreeIndex(tree);
@@ -87,7 +81,6 @@ export class ReplayEnv implements ExplorationEnv {
     this.batches.length = 0;
     this.roundsUsed = 0;
     this.doneFlag = false;
-    this.scoreOfRoot = null;
   }
 
   meta(id: string): import("../types.js").CellMeta {
@@ -109,9 +102,8 @@ export class ReplayEnv implements ExplorationEnv {
   }
 
   legalRoots(): number {
-    return this.index.nodes.filter(
-      (n) => n.parentId === ROOT_ID && !this.revealedSet.has(n.id)
-    ).length;
+    return this.index.nodes.filter((n) => n.parentId === ROOT_ID && !this.revealedSet.has(n.id))
+      .length;
   }
 
   openedBranches(): number[] {
@@ -212,9 +204,13 @@ export class ReplayEnv implements ExplorationEnv {
   private reveal(node: { id: string }): Observation {
     const full = this.index.get(node.id);
     if (!full) throw new IllegalBatchError(`unknown node ${node.id}`);
+    // The root's score is the tree baseline (paper: the root is the initial
+    // workspace, scored once as `baselineScore`). Passing it explicitly keeps a
+    // root child's parent delta measured against the root instead of relying on
+    // `toObservation`'s fallback and a never-assigned `scoreOfRoot`.
     const parentScore =
       full.parentId === ROOT_ID
-        ? this.scoreOfRoot
+        ? this.baselineScore
         : (this.index.get(full.parentId)?.score ?? null);
     const obs = withBranchSignals(
       toObservation(full, this.baselineScore, parentScore),
@@ -246,9 +242,6 @@ function replayTrace(env: ReplayEnv): ReplayTrace {
   };
 }
 
-function makeReplayEnv(
-  tree: DiscoveryTree,
-  opts: ReplayEnvOptions = {}
-): ReplayEnv {
+function makeReplayEnv(tree: DiscoveryTree, opts: ReplayEnvOptions = {}): ReplayEnv {
   return new ReplayEnv(tree, opts);
 }

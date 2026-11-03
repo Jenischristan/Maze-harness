@@ -39,10 +39,7 @@ function tree(seed: number) {
 }
 
 async function loadVariant(): Promise<ExplorationPolicy> {
-  const source = await readFile(
-    join(process.cwd(), "src/policies/variants/fixed.ts"),
-    "utf8"
-  );
+  const source = await readFile(join(process.cwd(), "src/policies/variants/fixed.ts"), "utf8");
   const compiled = await compilePolicy({
     source,
     outDir: join(tmp, "build"),
@@ -99,25 +96,25 @@ describe("fixed policy: sandbox source matches the typed class", () => {
  */
 describe("checked-in .dream scaffold", () => {
   it("declares no live MCP servers", async () => {
-    const raw = JSON.parse(
-      await readFile(join(process.cwd(), ".dream/mcp.json"), "utf8")
-    ) as { mcpServers?: Record<string, unknown> };
+    const raw = JSON.parse(await readFile(join(process.cwd(), ".dream/mcp.json"), "utf8")) as {
+      mcpServers?: Record<string, unknown>;
+    };
     expect(raw.mcpServers ?? {}).toEqual({});
   });
 
   it("keeps runsDir relative", async () => {
-    const raw = JSON.parse(
-      await readFile(join(process.cwd(), ".dream/config.json"), "utf8")
-    ) as { runsDir?: string };
+    const raw = JSON.parse(await readFile(join(process.cwd(), ".dream/config.json"), "utf8")) as {
+      runsDir?: string;
+    };
     expect(raw.runsDir).toBe("runs");
   });
 });
 
 describe("CLI version", () => {
   it("matches package.json", async () => {
-    const pkg = JSON.parse(
-      await readFile(join(process.cwd(), "package.json"), "utf8")
-    ) as { version: string };
+    const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as {
+      version: string;
+    };
     const { versionFromCli } = await import("../src/cli-version.js");
     expect(await versionFromCli()).toBe(pkg.version);
   });

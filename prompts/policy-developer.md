@@ -156,6 +156,15 @@ bootstrap plan derived from `context.fallbackBranchCount` /
 runner clamps to `1 <= branchCount <= context.hardMaxBranchCount` and
 `0 <= refineCount <= context.hardMaxRefineCount`.
 
+The runner then hands the **effective** plan to the policy that drives the
+rollout through its constructor: `config.plan` is `{ branchCount, refineCount }`
+or `undefined`. Do not rely on remembering the plan on `this` from a
+`planGrid` call — replay constructs a fresh instance for every tree and never
+calls `planGrid` on it, so a policy that only mutates state in `planGrid` loses
+the plan in replay. Read it in the constructor and treat it as a hard bound:
+never open more than `plan.branchCount` branches and never refine a branch past
+`plan.refineCount` attempts (the paper: "the runtime grid is the hard bound").
+
 Choose width versus depth from evidence, not a default preference:
 
 - many distinct roots improve early while deeper refinements stall: increase

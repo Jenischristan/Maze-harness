@@ -71,7 +71,13 @@ export const writeTool: ToolDefinition = {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { callId: "", name: "write", ok: false, content: `write failed: ${message}`, error: message };
+      return {
+        callId: "",
+        name: "write",
+        ok: false,
+        content: `write failed: ${message}`,
+        error: message
+      };
     }
   }
 };

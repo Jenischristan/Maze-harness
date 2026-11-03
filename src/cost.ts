@@ -12,7 +12,7 @@ const PRICES: Record<string, PricePerMillion> = {
   "gpt-4o-mini": { input: 0.15, output: 0.6 },
   "claude-3-5-sonnet": { input: 3, output: 15 },
   "claude-3-5-haiku": { input: 0.8, output: 4 },
-  "local": { input: 0, output: 0 }
+  local: { input: 0, output: 0 }
 };
 
 function priceFor(model: string): PricePerMillion {
@@ -24,7 +24,10 @@ function priceFor(model: string): PricePerMillion {
 
 export function usdFor(model: string, usage: Usage): number {
   const price = priceFor(model);
-  return (usage.promptTokens / 1_000_000) * price.input + (usage.completionTokens / 1_000_000) * price.output;
+  return (
+    (usage.promptTokens / 1_000_000) * price.input +
+    (usage.completionTokens / 1_000_000) * price.output
+  );
 }
 
 export interface CostTrackerOptions {
@@ -55,7 +58,13 @@ export class CostTracker {
     return { ...usage, usd };
   }
 
-  summary(): { promptTokens: number; completionTokens: number; totalTokens: number; usd: number; calls: number } {
+  summary(): {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    usd: number;
+    calls: number;
+  } {
     return {
       promptTokens: this.promptTokens,
       completionTokens: this.completionTokens,

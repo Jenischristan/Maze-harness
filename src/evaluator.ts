@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { collectText } from "./util/stream.js";
+import { taskChildEnv } from "./util/env.js";
 import type { Evaluator, EvaluatorResult, FailClass } from "./types.js";
 
 export interface CommandEvaluatorConfig {
@@ -49,7 +50,9 @@ export class CommandEvaluator implements Evaluator {
       }
       const child = spawn(cmd, finalArgs, {
         cwd: this.cfg.cwd ?? process.cwd(),
-        env: { ...process.env, ...(this.cfg.env ?? {}) },
+        // The evaluator is task code from the workspace and is untrusted: it
+        // gets the child allowlist, not the harness's provider credentials.
+        env: taskChildEnv(process.env, this.cfg.env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true
       });
@@ -108,7 +111,8 @@ export class CommandEvaluator implements Evaluator {
           });
           return;
         }
-        const lines = outSink.flush()
+        const lines = outSink
+          .flush()
           .split("\n")
           .map((l) => l.trim())
           .filter((l) => l.length > 0);
@@ -153,11 +157,9 @@ function parseEvaluatorJson(value: unknown, stderr = ""): EvaluatorResult {
     };
   }
   const obj = value as Record<string, unknown>;
-  const score =
-    typeof obj.score === "number" && Number.isFinite(obj.score) ? obj.score : null;
+  const score = typeof obj.score === "number" && Number.isFinite(obj.score) ? obj.score : null;
   const valid = typeof obj.valid === "boolean" ? obj.valid : score !== null;
-  const failClass =
-    typeof obj.failClass === "string" ? obj.failClass : valid ? "ok" : "incorrect";
+  const failClass = typeof obj.failClass === "string" ? obj.failClass : valid ? "ok" : "incorrect";
   const error = typeof obj.error === "string" ? obj.error : null;
   return {
     score,

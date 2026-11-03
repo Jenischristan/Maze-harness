@@ -3,6 +3,8 @@ import { collectText } from "../util/stream.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DiscoveryAgent, TaskSpec } from "../types.js";
+import { taskChildEnv } from "../util/env.js";
+import { redact } from "../util/redact.js";
 
 export interface CliAgentConfig {
   command: string[];
@@ -40,7 +42,9 @@ export async function runCli(opts: {
     let timedOut = false;
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
+      // Child processes never inherit provider keys: they get an allowlisted
+      // environment plus only what the caller explicitly opts into.
+      env: taskChildEnv(process.env, opts.env),
       stdio: ["pipe", "pipe", "pipe"],
       detached: true
     });
@@ -96,7 +100,9 @@ function renderAgentPrompt(task: TaskSpec, context: import("../types.js").AgentC
   lines.push(`Task: ${task.name}`);
   lines.push(task.description);
   lines.push("");
-  lines.push(`Attempt: branch ${context.branch}, attempt ${context.attempt} (node ${context.nodeId})`);
+  lines.push(
+    `Attempt: branch ${context.branch}, attempt ${context.attempt} (node ${context.nodeId})`
+  );
   if (context.ancestorPath.length > 0) {
     lines.push("");
     lines.push("History along this branch (oldest first):");
@@ -110,12 +116,18 @@ function renderAgentPrompt(task: TaskSpec, context: import("../types.js").AgentC
     const failures = context.ancestorPath.filter((o) => !o.valid);
     if (failures.length > 0) {
       lines.push("");
-      lines.push("Repair the most recent failure if one is present; do not repeat a failed design.");
+      lines.push(
+        "Repair the most recent failure if one is present; do not repeat a failed design."
+      );
     }
   }
   lines.push("");
-  lines.push("You are working inside a disposable git worktree. Modify the workspace files in place.");
-  lines.push("Do not touch anything outside the workspace. Do not attempt to run or modify the evaluator.");
+  lines.push(
+    "You are working inside a disposable git worktree. Modify the workspace files in place."
+  );
+  lines.push(
+    "Do not touch anything outside the workspace. Do not attempt to run or modify the evaluator."
+  );
   return lines.join("\n");
 }
 
@@ -158,9 +170,11 @@ export class CliAgent implements DiscoveryAgent {
     if (this.cfg.transcriptDir) {
       await mkdir(this.cfg.transcriptDir, { recursive: true });
       transcriptPath = join(this.cfg.transcriptDir, `${input.context.nodeId}.log`);
+      // Transcripts are long-lived and may contain a command whose output
+      // echoed a credential; redact before persisting.
       await writeFile(
         transcriptPath,
-        `# prompt\n${prompt}\n\n# stdout\n${res.stdout}\n\n# stderr\n${res.stderr}\n`,
+        redact(`# prompt\n${prompt}\n\n# stdout\n${res.stdout}\n\n# stderr\n${res.stderr}\n`),
         "utf8"
       );
     }

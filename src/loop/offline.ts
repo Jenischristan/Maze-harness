@@ -42,6 +42,8 @@ export interface OfflineConfig {
   betaGrid?: readonly number[] | null;
   /** Lambda in `pareto.reward = auc - lambda * parallel_penalty`. */
   paretoLambda?: number;
+  /** Effective grid plan for this round, handed to replayed policies. */
+  plan?: { branchCount: number; refineCount: number };
   onEvent?: (event: OfflineEvent) => void;
 }
 
@@ -76,6 +78,7 @@ async function evaluateBetaSweep(opts: {
   sandbox: { timeoutMs: number; memoryMb: number };
   grid: readonly number[];
   lambda: number;
+  plan?: { branchCount: number; refineCount: number };
 }): Promise<{ sweep: BetaSweepResult; bestBeta: number | null; reportsAtBest: ReplayReport[] }> {
   const baselineOf = (treeIndex: number): number =>
     opts.trees.find((t) => t.treeIndex === treeIndex)?.baselineScore ?? 0;
@@ -99,6 +102,7 @@ async function evaluateBetaSweep(opts: {
           timeoutMs: opts.sandbox.timeoutMs,
           memoryMb: opts.sandbox.memoryMb,
           scoreConfig: opts.scoreConfig,
+          plan: opts.plan,
           beta
         }
       });
@@ -121,7 +125,7 @@ async function evaluateBetaSweep(opts: {
   return {
     sweep,
     bestBeta,
-    reportsAtBest: bestBeta === null ? [] : reportsByBeta.get(bestBeta) ?? []
+    reportsAtBest: bestBeta === null ? [] : (reportsByBeta.get(bestBeta) ?? [])
   };
 }
 
@@ -144,6 +148,8 @@ export async function evaluatePolicyOnTrees(opts: {
   histories: Map<number, TreeSummary[]>;
   scoreConfig: ReplayScoreConfig;
   sandbox: { timeoutMs: number; memoryMb: number };
+  /** Effective grid plan for this round, handed to the policy constructor. */
+  plan?: { branchCount: number; refineCount: number };
 }): Promise<ReplayReport[]> {
   const reports: ReplayReport[] = [];
   for (const tree of opts.trees) {
@@ -155,7 +161,8 @@ export async function evaluatePolicyOnTrees(opts: {
       config: {
         timeoutMs: opts.sandbox.timeoutMs,
         memoryMb: opts.sandbox.memoryMb,
-        scoreConfig: opts.scoreConfig
+        scoreConfig: opts.scoreConfig,
+        plan: opts.plan
       }
     });
     reports.push(res.report);
@@ -184,7 +191,13 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
   reportsByPolicy.set(current.record.policyId, current.reports);
   if (current.sweep) sweepsByPolicy.set(current.record.policyId, current.sweep);
   feedbackLog.push(
-    renderFeedback(current.record.policyId, current.reports, cfg, evalTrees, current.sweep ?? undefined)
+    renderFeedback(
+      current.record.policyId,
+      current.reports,
+      cfg,
+      evalTrees,
+      current.sweep ?? undefined
+    )
   );
   cfg.onEvent?.({
     type: "policy-evaluated",
@@ -206,7 +219,10 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
       source = await cfg.developer.revise({
         currentPolicySource: previous.record.source,
         replayReports: previous.reports,
-        previousFeedback: feedbackLog
+        previousFeedback: feedbackLog,
+        // The developer must see the same baseline and objective selection used.
+        trees: evalTrees,
+        scoreConfig: cfg.scoreConfig
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -240,7 +256,8 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
       trees: evalTrees,
       histories: cfg.histories,
       scoreConfig: cfg.scoreConfig,
-      sandbox: cfg.sandbox
+      sandbox: cfg.sandbox,
+      plan: cfg.plan
     });
     const sweepRes = betaGrid
       ? await evaluateBetaSweep({
@@ -250,6 +267,7 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
           histories: cfg.histories,
           scoreConfig: cfg.scoreConfig,
           sandbox: cfg.sandbox,
+          plan: cfg.plan,
           grid: betaGrid,
           lambda: paretoLambda
         })
@@ -290,7 +308,11 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
   }
   for (const [policyId, sweep] of sweepsByPolicy) {
     await writeFile(
-      join(cfg.store.dir, "reports", `t${String(cfg.round).padStart(4, "0")}-${policyId}-beta_sweep.json`),
+      join(
+        cfg.store.dir,
+        "reports",
+        `t${String(cfg.round).padStart(4, "0")}-${policyId}-beta_sweep.json`
+      ),
       `${JSON.stringify(sweep, null, 2)}\n`,
       "utf8"
     );
@@ -338,7 +360,8 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
       trees: evalTrees,
       histories: cfg.histories,
       scoreConfig: cfg.scoreConfig,
-      sandbox: cfg.sandbox
+      sandbox: cfg.sandbox,
+      plan: cfg.plan
     });
     const sweepRes = betaGrid
       ? await evaluateBetaSweep({
@@ -348,6 +371,7 @@ export async function runOfflinePhase(cfg: OfflineConfig): Promise<OfflineResult
           histories: cfg.histories,
           scoreConfig: cfg.scoreConfig,
           sandbox: cfg.sandbox,
+          plan: cfg.plan,
           grid: betaGrid,
           lambda: paretoLambda
         })
@@ -376,14 +400,19 @@ function renderFeedback(
   trees: DiscoveryTree[],
   sweep?: BetaSweepResult
 ): string {
-  const lines = [`## ${policyId} mean=${gridMean(reports, trees, cfg.scoreConfig, cfg.scoreGrid).toFixed(4)}`];
+  const lines = [
+    `## ${policyId} mean=${gridMean(reports, trees, cfg.scoreConfig, cfg.scoreGrid).toFixed(4)}`
+  ];
   if (sweep) {
     lines.push(
       `beta sweep: pareto.reward=${sweep.reward.toFixed(4)} auc=${sweep.auc.toFixed(4)} parallel_penalty=${sweep.parallelPenalty.toFixed(4)}${sweep.degenerate ? " (DEGENERATE: beta does not change the trade-off)" : ""}`
     );
     lines.push(
       `  cells: ${sweep.cells
-        .map((c) => `beta=${c.beta} attainment=${c.attainment.toFixed(4)} probes=${c.probes} penalty=${c.parallelPenalty.toFixed(3)}`)
+        .map(
+          (c) =>
+            `beta=${c.beta} attainment=${c.attainment.toFixed(4)} probes=${c.probes} penalty=${c.parallelPenalty.toFixed(3)}`
+        )
         .join(" | ")}`
     );
   }

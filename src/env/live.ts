@@ -117,14 +117,22 @@ export class LiveEnv implements ExplorationEnv {
     return this.observations.size;
   }
 
+  /**
+   * Reset the observed prefix to just the root, exactly like ReplayEnv.
+   *
+   * The documented contract (paper Appendix B.2; `prompts/policy-developer.md`)
+   * is "restart the observed prefix at just the root". It must not erase the
+   * recorded discovery tree: in a live rollout the tree is the discovery
+   * output, and clearing `index.nodes` destroyed every node produced so far.
+   * Only the per-rollout view (`observations`, batches, round counter) is
+   * cleared here; `seq`/`nextBranchId` keep increasing so a later probe can
+   * never collide with an already recorded node id.
+   */
   reset(): void {
     this.observations.clear();
     this.batches.length = 0;
     this.roundsUsed = 0;
-    this.seq = 0;
     this.doneFlag = false;
-    this.nextBranchId = 0;
-    this.index.nodes.length = 0;
   }
 
   meta(id: string): import("../types.js").CellMeta {
@@ -199,9 +207,7 @@ export class LiveEnv implements ExplorationEnv {
       for (const obs of this.observations.values()) opened.add(obs.branch);
       const remaining = Math.max(0, rootCap - opened.size);
       if (rootsRequested > remaining) {
-        throw new Error(
-          `batch opens ${rootsRequested} root(s) but the plan allows ${remaining}`
-        );
+        throw new Error(`batch opens ${rootsRequested} root(s) but the plan allows ${remaining}`);
       }
     }
   }
@@ -237,8 +243,12 @@ export class LiveEnv implements ExplorationEnv {
     // subsequent `get`/`leaves`/`reserveBranch` calls see them.
     this.reindex();
     for (const node of results) {
+      // Same rule as ReplayEnv: a root child's parent is the root, whose score
+      // is the baseline, so live and replay compute identical parent deltas.
       const parentScore =
-        node.parentId === ROOT_ID ? null : (this.index.get(node.parentId)?.score ?? null);
+        node.parentId === ROOT_ID
+          ? this.baselineScore
+          : (this.index.get(node.parentId)?.score ?? null);
       const base = toObservation(node, this.baselineScore, parentScore);
       const earlier: Observation[] = [];
       for (const obs of this.observations.values()) {
@@ -249,10 +259,7 @@ export class LiveEnv implements ExplorationEnv {
     if (this.roundsUsed >= this.roundsLimit) this.doneFlag = true;
     if (this.cfg.onTreeChange) await this.cfg.onTreeChange(this.currentTree());
     if (this.cfg.onRound) await this.cfg.onRound(this.currentTree(), [...ids]);
-    return results.map(
-      (node) =>
-        this.observations.get(node.id) as Observation
-    );
+    return results.map((node) => this.observations.get(node.id) as Observation);
   }
 
   batchesTaken(): string[][] {
@@ -279,7 +286,7 @@ export class LiveEnv implements ExplorationEnv {
     seq: number;
     snapshotRef: string;
   }> {
-    const target = id === ROOT_ID ? null : this.index.get(id) ?? null;
+    const target = id === ROOT_ID ? null : (this.index.get(id) ?? null);
     const branch = target ? target.branch : this.reserveBranch();
     const attempt = target ? target.attempt + 1 : 0;
     const nodeId = target ? `${target.id}.${attempt}` : `b${branch}a${attempt}`;
@@ -328,7 +335,7 @@ export class LiveEnv implements ExplorationEnv {
       while (cursor) {
         const obs = this.observations.get(cursor.id);
         if (obs) ancestorPath.unshift(obs);
-        cursor = cursor.parentId === ROOT_ID ? null : this.index.get(cursor.parentId) ?? null;
+        cursor = cursor.parentId === ROOT_ID ? null : (this.index.get(cursor.parentId) ?? null);
       }
       const context: AgentContext = {
         nodeId: prep.id,

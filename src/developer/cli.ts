@@ -63,6 +63,8 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
     currentPolicySource: string;
     replayReports: ReplayReport[];
     previousFeedback: string[];
+    trees?: import("../types.js").DiscoveryTree[];
+    scoreConfig?: import("../types.js").ReplayScoreConfig;
   }): Promise<string> {
     this.calls += 1;
     const dir = join(this.cfg.workDir, `rev-${this.calls}`);
@@ -71,13 +73,16 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
     const notesPath = join(dir, "feedback.md");
     await writeFile(policyPath, input.currentPolicySource, "utf8");
 
-    const trees = summarizeReportsForFeedback(input.replayReports);
-    const report = renderFeedbackMarkdown(
-      "current",
-      input.replayReports,
-      trees,
-      { beta1: 0.002, beta2: 0.01, normalize: "none" }
-    );
+    // Use the real replay worlds and the objective selection used, so the
+    // developer sees true baselines, deltas, penalties and bonuses. Only fall
+    // back to synthesized trees when a caller does not supply them.
+    const trees = input.trees ?? summarizeReportsForFeedback(input.replayReports);
+    const scoreConfig = input.scoreConfig ?? {
+      beta1: 0.002,
+      beta2: 0.01,
+      normalize: "none" as const
+    };
+    const report = renderFeedbackMarkdown("current", input.replayReports, trees, scoreConfig);
     await writeFile(notesPath, `${report}\n\n${input.previousFeedback.join("\n\n")}\n`, "utf8");
 
     const instructions = await readFile(this.cfg.promptPath, "utf8");
@@ -106,14 +111,20 @@ export class CliPolicyDeveloper implements PolicyDeveloper {
   }
 }
 
+/**
+ * Fallback only: reconstruct minimal worlds when the caller does not hand over
+ * the real trees. `report.best` is a normalized best score, never the tree's
+ * baseline, so this cannot recover the true baseline. Callers that have the
+ * trees (`runOfflinePhase`) must pass them.
+ */
 function summarizeReportsForFeedback(
   reports: ReplayReport[]
 ): import("../types.js").DiscoveryTree[] {
   return reports.map((report) => ({
     runId: "feedback",
     treeIndex: report.treeIndex,
-    baselineScore: report.best,
-    maxParallelism: 0,
+    baselineScore: 0,
+    maxParallelism: report.maxParallelism,
     roundsLimit: report.k,
     policyId: report.policyId,
     nodes: [],

@@ -163,6 +163,20 @@ export interface GridPlanningContext {
   replaySupport: ReadonlyArray<{ traceBranchCount: number; traceRefineCount: number }>;
 }
 
+/**
+ * Config handed to a policy constructor in both the live loop and the replay
+ * sandbox. `beta` is the baked-in default for the episode; `plan` is the
+ * effective grid plan for this cycle (paper Appendix B.2: "the runtime grid is
+ * the hard bound"). Passing the plan through the constructor is what makes a
+ * policy's own `planGrid` output actually bound `solve()`; a policy that only
+ * remembers the plan on `this` loses it when the sandbox constructs a fresh
+ * instance for each replay.
+ */
+export interface PolicyConfig {
+  beta?: number;
+  plan?: GridPlan;
+}
+
 export interface ExplorationPolicy {
   solve(env: ExplorationEnv): Promise<void>;
   /** Optional per-cycle grid planner; a runtime fallback is used when absent. */
@@ -258,6 +272,15 @@ export interface PolicyDeveloper {
     currentPolicySource: string;
     replayReports: ReplayReport[];
     previousFeedback: string[];
+    /**
+     * The replay worlds the reports came from. Feedback normalizes against each
+     * tree's real baseline; without them a developer has to guess, and earlier
+     * code fabricated trees with `baselineScore: report.best`, which is the
+     * observed best, not the baseline.
+     */
+    trees?: DiscoveryTree[];
+    /** The score config selection actually used (beta1/beta2/rho/lambda). */
+    scoreConfig?: ReplayScoreConfig;
   }): Promise<string>;
 }
 
