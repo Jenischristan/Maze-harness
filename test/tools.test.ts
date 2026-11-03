@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile, readFile, chmod } from "node:fs/promises
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ToolExecutor,
   ToolRegistry,
@@ -984,6 +984,35 @@ describe("search: ls, grep and glob", () => {
     const filtered = await grepTool.execute({ pattern: "target", glob: "*.ts" }, ctx());
     expect(filtered.content).toContain("a.ts");
     expect(filtered.content).not.toContain("b.md");
+  });
+
+  it("grep applies the glob filter on the node fallback too", async () => {
+    // GitHub runners have no ripgrep, so this path is what CI actually runs.
+    // Mock the ESM binding so the tool believes rg is missing.
+    vi.resetModules();
+    vi.doMock("node:child_process", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:child_process")>();
+      return {
+        ...actual,
+        execFile: ((...args: unknown[]) => {
+          const cb = args.at(-1) as (err: Error | null, out: string) => void;
+          cb(new Error("spawn rg ENOENT"), "");
+          return {} as never;
+        }) as never
+      };
+    });
+    try {
+      const fresh = await import("../src/tools/search.js");
+      await writeFile(join(dir, "a.ts"), "needle");
+      await writeFile(join(dir, "b.md"), "needle");
+      const res = await fresh.grepTool.execute({ pattern: "needle", glob: "*.md" }, ctx());
+      expect(res.data).toMatchObject({ engine: "node" });
+      expect(res.content).toContain("b.md");
+      expect(res.content).not.toContain("a.ts");
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
   });
 
   it("grep is case-insensitive on request and reports no matches", async () => {

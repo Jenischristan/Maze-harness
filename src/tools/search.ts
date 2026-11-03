@@ -201,6 +201,10 @@ async function nodeGrep(
   maxResults: number
 ): Promise<string[]> {
   const re = new RegExp(pattern, args.caseInsensitive ? "i" : "");
+  // The ripgrep path forwards `glob` as `--glob`; the fallback must filter the
+  // same way or callers silently get matches from every file when rg is absent.
+  const glob = typeof args.glob === "string" && args.glob ? args.glob : null;
+  const globRe = glob ? globToRegExp(glob) : null;
   const { readdir } = await import("node:fs/promises");
   const { relative, join } = await import("node:path");
   const files: string[] = [];
@@ -224,6 +228,7 @@ async function nodeGrep(
   for (const file of files) {
     if (lines.length >= maxResults) break;
     const rel = relative(workspaceDir, file).split("\\").join("/");
+    if (globRe && !globRe.test(rel)) continue;
     let text: string;
     try {
       text = await readFile(file, "utf8");
