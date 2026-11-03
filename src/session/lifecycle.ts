@@ -165,7 +165,6 @@ export async function cloneSession(
     }
     for (const e of branch) {
       if (e.kind === "header") continue;
-      if (e.id === opts.at) break;
       if (e.kind === "message" && e.message) {
         await store.appendMessage(e.message);
       } else if (e.kind === "tool_call" && e.toolCall) {
@@ -175,6 +174,10 @@ export async function cloneSession(
       } else if (e.kind === "note" && e.note) {
         await store.appendNote(e.note);
       }
+      // The fork point is inclusive: history through `opts.at`. Breaking
+      // before the append used to drop the fork message itself, so forking at
+      // the first message produced an empty session.
+      if (e.id === opts.at) break;
     }
     return store;
   } catch (err) {

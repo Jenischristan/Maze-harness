@@ -46,6 +46,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Forking a session** at an invalid point left an orphan session file.
 - **factor-arena evaluator** graded four hard cases as correct regardless of
   output (`expected = None`) and had a wrong reference value for `gap_5e6`.
+- **Session store cycles**: two entries sharing an id (model- or MCP-supplied
+  tool-call ids are not unique) made `activeBranch()` loop until it crashed with
+  `RangeError: Invalid array length`. Entry ids now carry a random suffix and
+  the branch walk stops at the first repeated id.
+- **`webfetch` allowlist bypass**: `redirect: "follow"` let an allowlisted host
+  bounce the request to an internal, non-allowlisted host (SSRF). Redirects are
+  now followed manually with the allowlist re-checked on every hop, matching
+  `fetch`.
+- **Permission-pattern ReDoS**: a config rule such as `^(a+)+$` blocked the
+  event loop for ~44 s on a 31-character command. Nested-quantifier and
+  ambiguous-alternation patterns are rejected as non-matches, and compiled
+  regexes are cached.
+- **`websearch`** threw a `TypeError` on an unparsable `MAZE_SEARCH_URL`
+  instead of returning a failed result.
+- **Persistent `bash`** reported `ok: true` for a command that terminated the
+  shell (`exit 7`), and `collectText` emitted a trailing `\uFFFD` for a
+  truncated multibyte sequence.
+- **`apply_patch`** dropped a leading blank line in `*** Add File` bodies.
+- **`read`** refused BOM-marked UTF-16 files as binary; UTF-16LE/BE are now
+  decoded.
+- **Compaction** left a dangling page token after pruning a tool output, and
+  `shouldCompact` trusted the previous request's prompt-token count, so a large
+  tool result never triggered compaction. A single message larger than the
+  keep-recent budget also produced a no-op cut. All three are fixed.
+- **`lsp`** used `npx --no-install tsc`, which fails outside a project that
+  vendors TypeScript and was reported as "no diagnostics". It now resolves the
+  project/global compiler, prefers a local `ruff`, and reports compiler failures
+  as `checker-failed`.
+- **Session fork** points were off by one (forking at the first message copied
+  nothing).
+- **Evaluator output** that was a JSON array was accepted as a genuine
+  "incorrect" result instead of a malformed one.
+- **`runDream`** crashed with an opaque `TypeError` when a policy compiled but
+  default-exported a non-class value; it now fails with the compile message.
+- **Skill frontmatter** kept single quotes on scalar values.
 
 ### Added
 
@@ -57,6 +92,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Tests for the discovery agents (`runCli`, `CliAgent`, `ScriptedAgent`,
   `ToolAgent`), MCP handshake/tool-call round-trip, prompt assembly, skills and
   workspace snapshots/materialisation. Line coverage rose from 66% to ~78%.
+- A verification campaign covering the lowest-covered modules (`lsp`, `todo`,
+  `page`, `question`, `memory`, `fetch`, `subagents`, `provider`, `loop/dream`,
+  `loop/offline`, `env/live`, `workspace/git`, `workspace/diff`, `goals`,
+  `skills`, `registry`, `config`, `util/*` and the session lifecycle), plus
+  dedicated regression tests for every defect listed above. The suite grew from
+  407 to 861 tests; line coverage is ~92% (branches ~86%, functions ~96%) and
+  the previously sub-80% modules are all above 80%, most above 90%.
 
 ## [1.0.0] - 2026-11-03
 

@@ -16,6 +16,8 @@ interface FilePatch {
 
   create?: boolean;
 
+  addLines?: string[];
+
   delete?: boolean;
 }
 
@@ -104,9 +106,8 @@ export function parsePatch(input: string): FilePatch[] {
       throw new PatchParseError(`unknown patch directive: ${trimmed.slice(0, 60)}`);
     }
     if (current?.create) {
-      current.hunks[0]!.newText = current.hunks[0]!.newText
-        ? `${current.hunks[0]!.newText}\n${line}`
-        : line;
+      current.addLines = current.addLines ?? [];
+      current.addLines.push(line);
     } else if (trimmed.length > 0) {
       throw new PatchParseError(`unexpected content before a hunk: ${trimmed.slice(0, 60)}`);
     }
@@ -122,6 +123,7 @@ export function parsePatch(input: string): FilePatch[] {
 export function applyFilePatch(original: string, patch: FilePatch): string {
   if (patch.delete) return "";
   if (patch.create) {
+    if (patch.addLines) return patch.addLines.join("\n");
     return patch.hunks[0]?.newText ?? "";
   }
   const crlf = original.includes("\r\n");

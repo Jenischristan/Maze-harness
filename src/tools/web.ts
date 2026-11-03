@@ -3,6 +3,7 @@ import { decide, networkAllowed } from "./permissions.js";
 import { truncateOutput } from "./truncate.js";
 
 const TIMEOUT_MS = 30_000;
+const MAX_REDIRECTS = 5;
 
 function deny(name: string, message: string, error: string): ToolResult {
   return { callId: "", name, ok: false, content: message, error };
@@ -86,10 +87,16 @@ export const websearchTool: ToolDefinition = {
     const limit = Math.min(10, Math.max(1, Number(args.maxResults ?? 5) || 5));
 
     const endpoint = process.env.MAZE_SEARCH_URL ?? "https://html.duckduckgo.com/html/";
+    let endpointHost: string;
+    try {
+      endpointHost = new URL(endpoint).hostname;
+    } catch {
+      return deny("websearch", `invalid search endpoint: ${endpoint}`, "bad-endpoint");
+    }
     if (!networkAllowed(ctx.permission, endpoint)) {
       return deny(
         "websearch",
-        `network access to ${new URL(endpoint).hostname} is not allowed by the permission policy`,
+        `network access to ${endpointHost} is not allowed by the permission policy`,
         "network-denied"
       );
     }
@@ -186,7 +193,37 @@ export const webfetchTool: ToolDefinition = {
     const timeout = AbortSignal.timeout(TIMEOUT_MS);
     const signal = ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout;
     try {
-      const res = await fetch(url, { redirect: "follow", signal });
+      // Redirects are followed manually so the network allowlist is re-checked
+      // on every hop. `redirect: "follow"` used to let an allowlisted host
+      // bounce the request to an internal/non-allowlisted host (SSRF bypass).
+      let current = url;
+      let res: Response;
+      for (let hop = 0; ; hop += 1) {
+        res = await fetch(current, { redirect: "manual", signal });
+        const location = res.headers.get("location");
+        if (res.status < 300 || res.status >= 400 || !location) break;
+        await res.arrayBuffer().catch(() => undefined);
+        if (hop >= MAX_REDIRECTS) {
+          return deny("webfetch", `too many redirects (>${MAX_REDIRECTS})`, "too-many-redirects");
+        }
+        let next: URL;
+        try {
+          next = new URL(location, current);
+        } catch {
+          return deny("webfetch", `invalid redirect location: ${location}`, "bad-redirect");
+        }
+        if (next.protocol !== "http:" && next.protocol !== "https:") {
+          return deny("webfetch", `redirect to non-http(s) url: ${next.protocol}`, "bad-redirect");
+        }
+        if (!networkAllowed(ctx.permission, next.toString())) {
+          return deny(
+            "webfetch",
+            `redirect to ${next.hostname} is not allowed by the permission policy`,
+            "network-denied"
+          );
+        }
+        current = next.toString();
+      }
       const raw = (await res.text()).slice(0, limit);
       const contentType = res.headers.get("content-type") ?? "";
       const format =

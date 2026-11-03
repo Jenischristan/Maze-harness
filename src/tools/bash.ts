@@ -355,11 +355,16 @@ export const bashTool: ToolDefinition = {
     const t = truncateOutput(redact(cleaned), ctx.maxOutputBytes, "tail");
 
     const exitCode = result.exitCode;
-    const failed = !result.timedOut && !result.aborted && exitCode !== null && exitCode !== 0;
+    // A command that terminates the persistent shell (e.g. `exit 7`) has no
+    // sentinel, so exitCode is null and alive became false. Reporting that as
+    // success used to make failing scripts look like they passed.
+    const shellDied = live.exitReason !== null && result.exitCode === null;
+    const failed =
+      !result.timedOut && !result.aborted && !shellDied && exitCode !== null && exitCode !== 0;
     return {
       callId: "",
       name: "bash",
-      ok: !result.timedOut && !result.aborted && !failed,
+      ok: !result.timedOut && !result.aborted && !failed && !shellDied,
       content: result.aborted
         ? `[aborted]\n${t.text}`
         : result.timedOut
@@ -372,9 +377,11 @@ export const bashTool: ToolDefinition = {
         ? "aborted"
         : result.timedOut
           ? "timeout"
-          : failed
-            ? `exit ${exitCode}`
-            : undefined,
+          : shellDied
+            ? "shell-exited"
+            : failed
+              ? `exit ${exitCode}`
+              : undefined,
       data: { wallMs: Date.now() - started, persistent: true, exitCode }
     };
   }

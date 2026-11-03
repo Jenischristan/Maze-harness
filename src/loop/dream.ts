@@ -217,6 +217,15 @@ async function runDreamLocked(
     const policyModule = (await import(compiled.bundlePath)) as {
       default: new (cfg: unknown) => import("../types.js").ExplorationPolicy;
     };
+    // A bundle can compile yet default-export a non-class value (e.g. a
+    // literal). Constructing it used to throw an opaque "default is not a
+    // constructor" TypeError deep in the round; fail with the same actionable
+    // message as a compile failure instead.
+    if (typeof policyModule.default !== "function") {
+      throw new Error(
+        `policy ${policyId} failed to compile for online rollout: the module must default-export a class`
+      );
+    }
 
     const planner = new policyModule.default(bakedBeta === null ? {} : { beta: bakedBeta });
     const priorHistory = trees.map((t) => summaryFromTree(t));

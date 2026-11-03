@@ -58,10 +58,17 @@ export function shouldCompact(
   observedPromptTokens?: number
 ): boolean {
   const threshold = cfg.threshold ?? Math.max(1024, cfg.contextWindow - cfg.reserveTokens);
+  const estimate = projectTokens(messages) * ESTIMATE_SAFETY;
+  // The provider's prompt-token count describes the *previous* request. A large
+  // tool result appended after that request is invisible to it, so trusting the
+  // observed count alone let the projection grow past the context window
+  // (200 KB of tool output never triggered compaction). Use whichever is larger:
+  // the reported count is exact for the messages the provider saw, and the
+  // estimate covers anything added since.
   if (typeof observedPromptTokens === "number" && observedPromptTokens > 0) {
-    return observedPromptTokens > threshold;
+    return Math.max(observedPromptTokens, estimate) > threshold;
   }
-  return projectTokens(messages) * ESTIMATE_SAFETY > threshold;
+  return estimate > threshold;
 }
 
 export interface CompactionResult {
@@ -86,6 +93,12 @@ function findCut(messages: ChatMessage[], keepRecentTokens: number): number {
       let cut = i;
 
       while (cut < messages.length && messages[cut]?.role === "tool") cut += 1;
+      // A single message larger than the whole keep-recent budget starts the
+      // cut at that message; if it is a tool result the loop above walks all
+      // the way to the end and `cut === messages.length`, so nothing was ever
+      // summarised or pruned. Cap the cut so at least the oversized message
+      // (and everything before it) is compacted.
+      if (cut >= messages.length) cut = Math.max(0, messages.length - 1);
       return cut;
     }
   }
@@ -107,7 +120,15 @@ export function pruneToolOutputs(
     if (m.content.startsWith("[old tool output pruned")) return m;
     if (estimateMessageTokens(m) < opts.minTokens) return m;
     pruned += 1;
-    return { ...m, content: prunedPlaceholder(m.name ?? "tool", Buffer.byteLength(m.content)) };
+    // The page token refers to the pre-pruned body; keeping it would advertise
+    // content that is no longer in context (and dies with the page cache).
+    const { truncated: _drop, ...rest } = m as ChatMessage & {
+      truncated?: unknown;
+    };
+    return {
+      ...rest,
+      content: prunedPlaceholder(m.name ?? "tool", Buffer.byteLength(m.content))
+    };
   });
   return { messages: out, pruned };
 }

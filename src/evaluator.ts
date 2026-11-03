@@ -145,7 +145,10 @@ export class CommandEvaluator implements Evaluator {
 }
 
 function parseEvaluatorJson(value: unknown, stderr = ""): EvaluatorResult {
-  if (typeof value !== "object" || value === null) {
+  // `typeof [] === "object"` (and arrays are never null), so an array used to
+  // fall through and be reported as a genuine "incorrect" result with no
+  // score. Reject anything that is not a plain object.
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return {
       score: null,
       valid: false,

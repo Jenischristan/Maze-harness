@@ -34,18 +34,21 @@ function parseFrontmatter(raw: string): { meta: Frontmatter; body: string } {
     if (!m) continue;
     const key = m[1]!.toLowerCase();
     let value = m[2]!.trim();
+    if (value.startsWith("[") && value.endsWith("]")) {
+      value = value.slice(1, -1);
+      meta.allowedTools = value
+        .split(",")
+        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+        .filter(Boolean);
+      continue;
+    }
+    // Strip matching single or double quotes from scalar values; leaving them
+    // on made `description: 'x'` render the quotes in the skills prompt.
     if (
-      (value.startsWith("[") && value.endsWith("]")) ||
-      (value.startsWith('"') && value.endsWith('"'))
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
     ) {
-      if (value.startsWith("[")) {
-        value = value.slice(1, -1);
-        meta.allowedTools = value
-          .split(",")
-          .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-          .filter(Boolean);
-        continue;
-      }
       value = value.slice(1, -1);
     }
     if (key === "name") meta.name = value;

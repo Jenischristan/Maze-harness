@@ -72,6 +72,12 @@ function decodeText(buf: Buffer): { text: string; encoding: string } {
   }
   const utf16le = buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe;
   if (utf16le) return { text: buf.subarray(2).toString("utf16le"), encoding: "utf16le" };
+  const utf16be = buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff;
+  if (utf16be) {
+    const body = Buffer.from(buf.subarray(2));
+    body.swap16();
+    return { text: body.toString("utf16le"), encoding: "utf16be" };
+  }
   return { text: buf.toString("utf8"), encoding: "utf8" };
 }
 
@@ -185,7 +191,13 @@ export const readTool: ToolDefinition = {
         };
       }
 
-      if (BINARY_EXTENSIONS.has(ext) || looksBinary(buf)) {
+      // A BOM is authoritative: UTF-16LE text contains NUL bytes, so the
+      // binary sniff below would reject every ASCII UTF-16 file.
+      const hasTextBom =
+        (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) ||
+        (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) ||
+        (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf);
+      if (!hasTextBom && (BINARY_EXTENSIONS.has(ext) || looksBinary(buf))) {
         return {
           callId: "",
           name: "read",

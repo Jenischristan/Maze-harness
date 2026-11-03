@@ -117,7 +117,11 @@ export class SessionStore {
 
   async appendToolCall(call: ToolCall, parentId?: string): Promise<SessionEntry> {
     const entry: SessionEntry = {
-      id: `tc-${call.id || shortId()}`,
+      // Model- and MCP-supplied ids are not guaranteed unique. Appending a
+      // random suffix keeps entry ids unique so a duplicate id can never make
+      // `activeBranch()` revisit the same node (which used to loop until it
+      // crashed with RangeError: Invalid array length).
+      id: `tc-${call.id || shortId()}-${shortId()}`,
       parentId: parentId ?? this.head,
       kind: "tool_call",
       timestamp: new Date().toISOString(),
@@ -189,10 +193,16 @@ export class SessionStore {
   }
 
   activeBranch(): SessionEntry[] {
-    const byId = new Map(this.entries.map((e) => [e.id, e]));
+    // Keep the first occurrence of every id so a crafted or corrupt file with a
+    // duplicate id (or a parentId cycle) can never make this loop revisit a
+    // node forever; the branch simply stops at the first repeat.
+    const byId = new Map<string, SessionEntry>();
+    for (const e of this.entries) if (!byId.has(e.id)) byId.set(e.id, e);
     const out: SessionEntry[] = [];
+    const seen = new Set<string>();
     let cur = this.head ? byId.get(this.head) : undefined;
-    while (cur) {
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
       out.push(cur);
       cur = cur.parentId ? byId.get(cur.parentId) : undefined;
     }

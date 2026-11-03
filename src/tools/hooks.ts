@@ -55,8 +55,8 @@ async function runOne(
       kill();
     }, hook.timeoutMs ?? opts.timeoutMs);
 
-    const outSink = collectText(child.stdout, { cap: opts.maxOutputBytes });
-    const errSink = collectText(child.stderr, { cap: opts.maxOutputBytes });
+    const outSink = collectText(child.stdout, { cap: opts.maxOutputBytes + 1 });
+    const errSink = collectText(child.stderr, { cap: opts.maxOutputBytes + 1 });
     const settle = (): void => signal?.removeEventListener("abort", onAbort);
     child.on("error", (err) => {
       clearTimeout(timer);

@@ -40,8 +40,12 @@ export function collectText(stream: Readable, opts: { cap?: number } = {}): Text
       return capped;
     },
     flush() {
+      // `decoder.end()` emits U+FFFD for a dangling partial multibyte sequence.
+      // Drop that replacement character so callers never see a spurious
+      // \uFFFD at the very end of collected output.
       const tail = decoder.end();
-      if (tail && !capped) text += tail;
+      const cleaned = tail.replace(/\uFFFD+$/, "");
+      if (cleaned && !capped) text += cleaned;
       return text;
     }
   };

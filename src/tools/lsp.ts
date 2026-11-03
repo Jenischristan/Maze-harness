@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { decide } from "./permissions.js";
 
@@ -46,6 +48,42 @@ export function parsePyOutput(output: string): Diagnostic[] {
     });
   }
   return out;
+}
+
+function tscCommand(workspaceDir: string): { command: string; prefix: string[] } | null {
+  // Prefer the project's own compiler, then a globally installed one. Never use
+  // `npx --no-install`: outside a project that vendors `typescript` it exits
+  // non-zero with npm's own error text, which used to look like a clean run.
+  const local = join(
+    workspaceDir,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "tsc.cmd" : "tsc"
+  );
+  if (existsSync(local)) return { command: local, prefix: [] };
+  const js = join(workspaceDir, "node_modules", "typescript", "bin", "tsc");
+  if (existsSync(js)) return { command: process.execPath, prefix: [js] };
+  return null;
+}
+
+function ruffCommand(workspaceDir: string): string | null {
+  const local = join(
+    workspaceDir,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "ruff.cmd" : "ruff"
+  );
+  if (existsSync(local)) return local;
+  const path = process.env.PATH ?? "";
+  const exts = process.platform === "win32" ? ["", ".exe", ".cmd"] : [""];
+  for (const dir of path.split(process.platform === "win32" ? ";" : ":")) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = join(dir, `ruff${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 function run(
@@ -106,9 +144,19 @@ export const lspTool: ToolDefinition = {
     }
     const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
     if ([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"].includes(ext)) {
+      const tsc = tscCommand(ctx.workspaceDir);
+      if (!tsc) {
+        return {
+          callId: "",
+          name: "lsp",
+          ok: true,
+          content:
+            "no TypeScript compiler found (install `typescript` in the workspace or globally); skipped diagnostics."
+        };
+      }
       const res = await run(
-        "npx",
-        ["--no-install", "tsc", "--noEmit", "--pretty", "false"],
+        tsc.command,
+        [...tsc.prefix, "--noEmit", "--pretty", "false"],
         ctx.workspaceDir,
         60_000
       );
@@ -117,7 +165,7 @@ export const lspTool: ToolDefinition = {
           callId: "",
           name: "lsp",
           ok: true,
-          content: "tsc is not available (npx/tsc not installed); skipped diagnostics."
+          content: "tsc is not available; skipped diagnostics."
         };
       }
       // Match the requested file exactly. A substring test (`output.includes`)
@@ -127,6 +175,18 @@ export const lspTool: ToolDefinition = {
         (d) => d.file.split("\\").join("/").replace(/^\.\//, "") === want
       );
       if (diagnostics.length === 0) {
+        // A non-zero exit with no parseable diagnostic means the compiler
+        // itself failed (bad tsconfig, missing dependency). Reporting that as
+        // "no diagnostics" would hide a real problem.
+        if (res.code !== 0 && res.output.trim().length > 0) {
+          return {
+            callId: "",
+            name: "lsp",
+            ok: false,
+            content: `tsc failed (exit ${res.code}):\n${res.output.trim().slice(0, 4000)}`,
+            error: "checker-failed"
+          };
+        }
         return { callId: "", name: "lsp", ok: true, content: `no diagnostics for ${path}` };
       }
       return {
@@ -142,12 +202,14 @@ export const lspTool: ToolDefinition = {
       };
     }
     if (ext === ".py") {
-      const res = await run(
-        "ruff",
-        ["check", "--output-format", "concise", path],
-        ctx.workspaceDir,
-        30_000
-      );
+      const res = ruffCommand(ctx.workspaceDir)
+        ? await run(
+            ruffCommand(ctx.workspaceDir) ?? "ruff",
+            ["check", "--output-format", "concise", path],
+            ctx.workspaceDir,
+            30_000
+          )
+        : null;
       if (!res) {
         const py = await run("python3", ["-m", "py_compile", path], ctx.workspaceDir, 30_000);
         if (!py) {

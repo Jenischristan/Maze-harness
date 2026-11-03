@@ -234,18 +234,72 @@ export async function decide(
 
 const MAX_SUBJECT_CHARS = 4096;
 
+const regexCache = new Map<string, RegExp | null>();
+
+function cachedRegExp(pattern: string, flags: string): RegExp | null {
+  const key = `${flags}\u0000${pattern}`;
+  if (regexCache.has(key)) return regexCache.get(key)!;
+  let re: RegExp | null;
+  try {
+    re = new RegExp(pattern, flags);
+  } catch {
+    re = null;
+  }
+  if (regexCache.size > 512) regexCache.clear();
+  regexCache.set(key, re);
+  return re;
+}
+
+// Detect the classic catastrophic-backtracking shapes: a quantified group that
+// itself contains a quantifier, e.g. (a+)+, (a|aa)*, (\d*)*. Such patterns are
+// rejected instead of run, because a match cannot be interrupted and a short
+// hostile command used to block the event loop for minutes.
+export function isReDoSRisk(pattern: string): boolean {
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] !== "(" || pattern[i - 1] === "\\") continue;
+    let depth = 0;
+    let inner = "";
+    let j = i;
+    for (; j < pattern.length; j += 1) {
+      const c = pattern[j]!;
+      if (c === "\\") {
+        inner += c + (pattern[j + 1] ?? "");
+        j += 1;
+        continue;
+      }
+      if (c === "(") depth += 1;
+      else if (c === ")") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+      if (j > i) inner += c;
+    }
+    if (j >= pattern.length) return false;
+    const after = pattern[j + 1] ?? "";
+    const quantifiedGroup = after === "+" || after === "*" || after === "{";
+    if (!quantifiedGroup) continue;
+    // (a+)+, (\d*)*: an inner quantifier.
+    if (/([+*]|\{\d*,\d*\})/.test(inner)) return true;
+    // (a|aa)*: an ambiguous alternation is also exponential when the
+    // quantified group also contains a quantifier.
+    if ((inner.match(/\|/g) ?? []).length >= 1 && /[+*]/.test(inner)) return true;
+    // (a|aa)*$ style: the bare alternation inside a starred group is enough
+    // when the alternation branches overlap, so flag any alternation whose
+    // branches share a prefix with an unbounded quantifier on the group.
+    if (after === "*" && /\|/.test(inner)) return true;
+  }
+  return false;
+}
+
 function patternMatches(pattern: string, subject: string): boolean {
   const input = subject.length > MAX_SUBJECT_CHARS ? subject.slice(0, MAX_SUBJECT_CHARS) : subject;
+  if (isReDoSRisk(pattern)) return false;
   return safeRegExpTest(pattern, input, "i");
 }
 
 function safeRegExpTest(pattern: string, input: string, flags: string): boolean {
-  let re: RegExp;
-  try {
-    re = new RegExp(pattern, flags);
-  } catch {
-    return false;
-  }
+  const re = cachedRegExp(pattern, flags);
+  if (!re) return false;
   try {
     return re.test(input);
   } catch {

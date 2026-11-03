@@ -54,17 +54,20 @@ describe("session lifecycle", () => {
     expect(clone.meta.name).toContain("(clone)");
   });
 
-  it("fork stops at the requested entry", async () => {
+  it("fork includes the requested entry and stops before the next one", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dh-fork-"));
     const src = await seedSession(dir, ["a", "b", "c"]);
     const branch = src.activeBranch().filter((e) => e.kind === "message");
+    // branch[2] is the user message "b": the fork point is inclusive, so the
+    // history is exactly "a", "re: a", "b" and never reaches "re: b".
+    expect(branch[2]!.message!.content).toBe("b");
     const at = branch[2]!.id;
     const fork = await cloneSession(dir, src.meta.runId, "fork", { at });
     const contents = fork
       .projection()
       .filter((m) => !m.synthetic)
       .map((m) => m.content);
-    expect(contents).toEqual(["a", "re: a"]);
+    expect(contents).toEqual(["a", "re: a", "b"]);
   });
 
   it("fork rejects an entry not on the active branch", async () => {
