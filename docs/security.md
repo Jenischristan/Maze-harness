@@ -24,7 +24,11 @@ container is required.
 Everything below the line is **untrusted or semi-trusted**. Each child gets:
 
 - an allowlisted environment (`src/util/env.ts`): no `DREAM_*`, `OPENAI_*`,
-  `AWS_*`, no `NODE_OPTIONS`, `LD_PRELOAD`, `BASH_ENV`, `PYTHONPATH`;
+  `AWS_*`, no `NODE_OPTIONS`, `LD_PRELOAD`, `BASH_ENV`, `PYTHONPATH`. The
+  denylist applies to caller-supplied extras as well as to the parent process
+  environment, so a task cannot pass a provider key to a child by injecting it
+  through a hook, MCP server or agent config (the internal `DREAM_CHILD`
+  marker is the one trusted exception);
 - its own process group so a timeout kills the whole tree;
 - bounded output collection.
 

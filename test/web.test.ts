@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  htmlToText,
-  parseDuckDuckGo,
-  webfetchTool,
-  websearchTool
-} from "../src/tools/web.js";
+import { htmlToText, parseDuckDuckGo, webfetchTool, websearchTool } from "../src/tools/web.js";
 import type { PermissionPolicy } from "../src/tools/permissions.js";
 import type { ToolContext } from "../src/types.js";
 
@@ -61,7 +56,7 @@ describe("htmlToText", () => {
 
   it("decodes named and numeric entities", () => {
     expect(htmlToText("<p>A &amp; B &lt;c&gt; &quot;d&quot; &#39;e&#39; &nbsp;f</p>")).toBe(
-      'A & B <c> "d" \'e\' f'
+      "A & B <c> \"d\" 'e' f"
     );
     expect(htmlToText("<p>&#65;&#x42;</p>")).toBe("AB");
   });
@@ -149,7 +144,9 @@ describe("websearch tool", () => {
 
   it("falls back to page text when nothing parses", async () => {
     process.env.MAZE_SEARCH_URL = "https://example.com/html/";
-    globalThis.fetch = vi.fn(async () => htmlResponse("<p>nothing here</p>")) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(async () =>
+      htmlResponse("<p>nothing here</p>")
+    ) as unknown as typeof fetch;
     const res = await websearchTool.execute({ query: "x" }, ctx(policy()));
     expect(res.ok).toBe(true);
     expect(res.content).toContain("no parsed results");
@@ -218,7 +215,9 @@ describe("webfetch tool", () => {
   });
 
   it("reports an http error status but still returns the body", async () => {
-    globalThis.fetch = vi.fn(async () => htmlResponse("<p>missing</p>", 404)) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(async () =>
+      htmlResponse("<p>missing</p>", 404)
+    ) as unknown as typeof fetch;
     const res = await webfetchTool.execute({ url: "https://example.com/x" }, ctx(policy()));
     expect(res.ok).toBe(false);
     expect(res.error).toBe("http 404");

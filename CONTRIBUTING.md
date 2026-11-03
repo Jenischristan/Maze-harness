@@ -29,6 +29,19 @@ Every change must keep all of these green:
 | `pnpm test:cli`      | End-to-end CLI as a subprocess                                   |
 | `pnpm build`         | Typecheck + esbuild bundle into `dist/`                          |
 
+### Test layers
+
+| Layer       | Where                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------- |
+| unit        | pure helpers (`util/*`, `score.ts`, `tree.ts`, tool parsers, `fuzzy-match`)                                          |
+| integration | executor + session + provider together (`tools.test.ts`, `agent.test.ts`, `chat.test.ts` against a local SSE server) |
+| system      | bundled evaluators run as child processes (`evaluators.test.ts`), MCP servers over stdio (`infra.test.ts`)           |
+| end-to-end  | the built CLI (`test:cli`)                                                                                           |
+| fuzz        | `test/fuzz/*` — chunk splits, projections, parsers                                                                   |
+
+The evaluator suites need `python3`; they also cover the offline/refusal paths
+so a broken candidate fails without network access or installs.
+
 `pnpm check` runs typecheck + lint + test. CI (`.github/workflows/ci.yml`)
 runs the full set on Node 20 and 22, then builds and runs the CLI smoke test.
 

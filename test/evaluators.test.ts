@@ -145,9 +145,17 @@ describe("fast-sum evaluator", () => {
     const ws = await copyInit("fast-sum", join(dir, "fastbad"));
     await writeFile(
       join(ws, "solution.py"),
-      ["def solve(n):", "    return 0", "", "def fib(k):", "    return 0", "", "def count_primes(limit):", "    return 0", ""].join(
-        "\n"
-      )
+      [
+        "def solve(n):",
+        "    return 0",
+        "",
+        "def fib(k):",
+        "    return 0",
+        "",
+        "def count_primes(limit):",
+        "    return 0",
+        ""
+      ].join("\n")
     );
     const res = await runEvaluator("examples/fast-sum/evaluator/evaluate.py", ws);
     expect(res.last).toMatchObject({ score: null, valid: false, failClass: "incorrect" });
@@ -253,5 +261,94 @@ describe("factor-arena evaluator", () => {
     );
     const res = await runEvaluator("examples/factor-arena/evaluator/evaluate.py", ws);
     expect(res.last).toMatchObject({ score: null, valid: false, failClass: "incorrect" });
+  }, 120_000);
+});
+
+describe("self-improve evaluator", () => {
+  function runSelfImprove(
+    workspace: string,
+    env: Record<string, string>
+  ): Promise<{ code: number | null; last: EvaluatorLine | null; stdout: string; stderr: string }> {
+    return new Promise((resolvePromise) => {
+      const child = spawn(
+        "python3",
+        [join(root, "examples/self-improve/evaluator/evaluate.py"), workspace],
+        {
+          cwd: dir,
+          stdio: ["ignore", "pipe", "pipe"],
+          // Bounded: no dependency install is attempted (offline flags) and the
+          // sub-command timeouts are tiny so a broken candidate fails fast.
+          env: {
+            ...process.env,
+            SELF_IMPROVE_LOG_DIR: join(dir, "logs"),
+            SELF_IMPROVE_CHECK_TIMEOUT: "20",
+            SELF_IMPROVE_TEST_TIMEOUT: "20",
+            ...env
+          }
+        }
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
+      child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+      child.on("error", () => resolvePromise({ code: -1, last: null, stdout, stderr }));
+      child.on("close", (code) => {
+        const lines = stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
+        let last: EvaluatorLine | null = null;
+        const lastLine = lines.at(-1);
+        if (lastLine) {
+          try {
+            last = JSON.parse(lastLine) as EvaluatorLine;
+          } catch {
+            last = null;
+          }
+        }
+        resolvePromise({ code, last, stdout, stderr });
+      });
+    });
+  }
+
+  it("reports a missing workspace as a runtime failure with one JSON line", async () => {
+    const res = await runSelfImprove(join(dir, "does-not-exist"), {});
+    expect(res.code).toBe(0);
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "runtime" });
+    expect(res.last!.error).toContain("workspace missing");
+    expect(res.stdout.trim().split("\n")).toHaveLength(1);
+  }, 60_000);
+
+  it("reports a workspace without package.json as a compile failure", async () => {
+    const ws = join(dir, "no-package");
+    await writeFile(join(ws, "README.md"), "# nothing\n").catch(async () => {
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(ws, { recursive: true });
+      await writeFile(join(ws, "README.md"), "# nothing\n");
+    });
+    const res = await runSelfImprove(ws, {});
+    expect(res.last).toMatchObject({ score: null, valid: false, failClass: "compile" });
+    expect(res.last!.error).toContain("package.json");
+  }, 60_000);
+
+  it("fails closed (never downloads) when node_modules is absent", async () => {
+    // A package.json with no node_modules and no shared install: the evaluator
+    // must refuse rather than reach the network. The offline flags make the
+    // fallback install a no-op, so this returns quickly.
+    const ws = join(dir, "offline");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(ws, { recursive: true });
+    await writeFile(
+      join(ws, "package.json"),
+      JSON.stringify({ name: "candidate", version: "0.0.0" })
+    );
+    const res = await runSelfImprove(ws, { SELF_IMPROVE_NODE_MODULES: "" });
+    expect(res.last).not.toBeNull();
+    if (res.last!.valid === false) {
+      expect(["runtime", "compile"]).toContain(res.last!.failClass);
+      expect(res.last!.score).toBeNull();
+    }
+    // Whatever the outcome, the contract is exactly one JSON line on stdout.
+    expect(res.stdout.trim().split("\n")).toHaveLength(1);
   }, 120_000);
 });

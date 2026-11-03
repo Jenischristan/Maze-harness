@@ -64,8 +64,7 @@ export async function diffWorkspace(opts: DiffOptions): Promise<DiffResult> {
   // `git diff` ignores untracked files. For the default (whole-workspace, not
   // against an explicit ref) view, include them as synthetic patches so a file
   // an agent just created is visible instead of reported as "no changes".
-  const untrackedPatch =
-    opts.ref || opts.path ? "" : await untrackedFilesPatch(cwd);
+  const untrackedPatch = opts.ref || opts.path ? "" : await untrackedFilesPatch(cwd);
   const raw = [res.stdout, untrackedPatch].filter((s) => s.trim()).join("\n");
   if (!raw.trim()) {
     return { patch: "", files: [], added: 0, removed: 0, truncated: false, note: "no changes" };

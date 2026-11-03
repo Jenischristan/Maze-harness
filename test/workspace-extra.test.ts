@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GitWorkspace, git } from "../src/workspace/git.js";
 import { TurnSnapshots, removeDir } from "../src/workspace/snapshot.js";
-import {
-  materializeWorkspace,
-  workspaceSourceMatches
-} from "../src/workspace/materialize.js";
+import { materializeWorkspace, workspaceSourceMatches } from "../src/workspace/materialize.js";
 
 let tmp = "";
 let initDir = "";
@@ -89,7 +86,10 @@ describe("turn snapshots", () => {
     await snaps.snapshot("b");
     await snaps.prune();
     expect(snaps.currentRef).toBeNull();
-    const refs = await git(["for-each-ref", "--format=%(refname)", "refs/dream/turns/"], ws.repoDir);
+    const refs = await git(
+      ["for-each-ref", "--format=%(refname)", "refs/dream/turns/"],
+      ws.repoDir
+    );
     expect(refs.stdout.trim()).toBe("");
     await expect(snaps.restore("refs/dream/turns/1")).rejects.toThrow(/not found/);
   });

@@ -121,7 +121,9 @@ describe("agent definitions", () => {
     );
     const agents = await discoverAgents(dir);
     const names = agents.map((a) => a.name);
-    expect(names).toEqual(expect.arrayContaining(["build", "plan", "explore", "general", "auditor"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["build", "plan", "explore", "general", "auditor"])
+    );
     const auditor = agents.find((a) => a.name === "auditor")!;
     expect(auditor.mode).toBe("plan");
     expect(auditor.readOnly).toBe(true);
@@ -140,13 +142,28 @@ describe("agent definitions", () => {
   it("toolsForAgent filters by allowlist and read-only mode", () => {
     const tools = ["read", "grep", "edit", "bash"].map((name) => ({ name }));
     const readOnly = toolsForAgent(
-      { name: "p", description: "", mode: "plan", prompt: "", tools: ["read", "edit"], readOnly: true, source: "x" },
+      {
+        name: "p",
+        description: "",
+        mode: "plan",
+        prompt: "",
+        tools: ["read", "edit"],
+        readOnly: true,
+        source: "x"
+      },
       tools
     );
     expect(readOnly.map((t) => t.name)).toEqual(["read"]);
 
     const allowlisted = toolsForAgent(
-      { name: "s", description: "", mode: "subagent", prompt: "", tools: ["grep", "bash"], source: "x" },
+      {
+        name: "s",
+        description: "",
+        mode: "subagent",
+        prompt: "",
+        tools: ["grep", "bash"],
+        source: "x"
+      },
       tools
     );
     expect(allowlisted.map((t) => t.name)).toEqual(["grep", "bash"]);

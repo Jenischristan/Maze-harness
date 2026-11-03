@@ -59,7 +59,13 @@ export function childEnv(
     if (value !== undefined) env[key] = value;
   }
   for (const [key, value] of Object.entries(extra)) {
-    if (value !== undefined) env[key] = value;
+    // `extra` is caller-supplied but must obey the same denylist as the parent
+    // environment: otherwise a task can smuggle DREAM_API_KEY (or any other
+    // provider secret) into the child it is supposed to be scrubbed of. The
+    // one trusted marker is DREAM_CHILD, which this module sets itself.
+    if (value === undefined) continue;
+    if (key !== "DREAM_CHILD" && isDeniedEnvKey(key)) continue;
+    env[key] = value;
   }
   return env;
 }

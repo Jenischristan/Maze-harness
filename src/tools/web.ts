@@ -58,8 +58,9 @@ export function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
     const start = (m.index ?? 0) + m[0].length;
     const end = i + 1 < anchors.length ? (anchors[i + 1]!.index ?? html.length) : html.length;
     const between = html.slice(start, end);
-    const snippetMatch =
-      /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(between);
+    const snippetMatch = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(
+      between
+    );
     const snippet = htmlToText(snippetMatch?.[1] ?? "");
     results.push({ title, url, snippet });
   }

@@ -106,10 +106,12 @@ process-group kills), `page`, `fetch` (allowlist re-checked per redirect).
 Read-only calls run in parallel; mutating calls run sequentially and trigger
 verification hooks.
 
-**Safety.** Tiered `allow`/`ask`/`deny` permissions (fail-closed), symlink-aware
-path resolution, an allowlisted environment for every child process (no
-provider credentials), secret redaction at every persistence and logging
-boundary, and per-turn git snapshots for rollback.
+**Safety.** Tiered `allow`/`ask`/`deny` permissions (fail-closed; the deny list
+matches the resolved command name, so absolute paths cannot bypass it),
+symlink-aware path resolution, an allowlisted environment for every child
+process (no provider credentials, and the denylist also applies to
+config-supplied `env` extras), secret redaction at every persistence and
+logging boundary, and per-turn git snapshots for rollback.
 
 **Context.** Project memory, automatic compaction with a persisted boundary,
 append-only JSONL session tree (clone/fork/resume/rename/delete), sub-agents,

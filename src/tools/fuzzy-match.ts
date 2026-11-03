@@ -94,7 +94,8 @@ function lineTrimmedMatch(text: string, needle: string): FuzzyMatch | null {
     let offset = 0;
     for (let k = 0; k < start; k += 1) offset += textLines[k]!.length + 1;
     const startOffset = offset;
-    const endOffset = startOffset + textLines.slice(start, start + needleLines.length).join("\n").length;
+    const endOffset =
+      startOffset + textLines.slice(start, start + needleLines.length).join("\n").length;
     return {
       start: startOffset,
       end: endOffset,

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { REDACTED, redact, redactValue } from "../src/util/redact.js";
 import { parseCommandLine, parseCommandSpec, argvJoin, quoteArg } from "../src/util/args.js";
-import { childEnv, isDeniedEnvKey } from "../src/util/env.js";
+import { childEnv, isDeniedEnvKey, taskChildEnv } from "../src/util/env.js";
 import { Budget, describeBudgetExceeded } from "../src/util/limits.js";
 import { withRetry, isRetryableError, computeDelay } from "../src/util/retry.js";
 import {
@@ -113,6 +113,23 @@ describe("child environment scrubbing", () => {
     expect(env.SAFE_FLAG).toBe("1");
     expect(isDeniedEnvKey("DREAM_ANYTHING")).toBe(true);
     expect(isDeniedEnvKey("PATH")).toBe(false);
+  });
+
+  it("never lets caller-supplied extras smuggle a denied key into the child", () => {
+    // Regression: `extra` was copied verbatim, so a task could pass
+    // DREAM_API_KEY (or any provider secret) straight to the child process
+    // the allowlist exists to protect.
+    const env = childEnv(
+      { PATH: "/bin" },
+      { DREAM_API_KEY: "leak", OPENAI_API_KEY: "leak", SAFE_FLAG: "1" }
+    );
+    expect(env.SAFE_FLAG).toBe("1");
+    expect(env.DREAM_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+
+    const taskEnv = taskChildEnv({ PATH: "/bin" }, { DREAM_API_KEY: "leak" });
+    expect(taskEnv.DREAM_CHILD).toBe("1");
+    expect(taskEnv.DREAM_API_KEY).toBeUndefined();
   });
 });
 

@@ -137,7 +137,12 @@ describe("session store", () => {
     // dropped its early usage note and under-reported the message count.
     const store = new SessionStore({ dir, runId: "s5" });
     await store.init();
-    await store.recordUsage({ promptTokens: 100, completionTokens: 50, totalTokens: 150, usd: 0.01 });
+    await store.recordUsage({
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+      usd: 0.01
+    });
     for (let i = 0; i < 400; i += 1) {
       await store.appendMessage({
         role: i % 2 === 0 ? "user" : "assistant",
