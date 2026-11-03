@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -102,11 +102,20 @@ describe("checked-in .dream scaffold", () => {
     expect(raw.mcpServers ?? {}).toEqual({});
   });
 
-  it("keeps runsDir relative", async () => {
-    const raw = JSON.parse(await readFile(join(process.cwd(), ".dream/config.json"), "utf8")) as {
-      runsDir?: string;
-    };
-    expect(raw.runsDir).toBe("runs");
+  it("ships no persisted project config", async () => {
+    // Configuration is flags + environment only. `/init` must not write a
+    // defaults file either, or the two sources would drift.
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(process.cwd(), ".dream/config.json"))).toBe(false);
+    const root = await mkdtemp(join(tmpdir(), "dh-init-cfg-"));
+    try {
+      const { initProject } = await import("../src/project-init.js");
+      const result = await initProject(root);
+      expect(result.created).not.toContain(".dream/config.json");
+      expect(existsSync(join(root, ".dream/config.json"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

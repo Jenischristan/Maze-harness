@@ -252,6 +252,12 @@ function permissionPolicy(mode: string): PermissionPolicy {
     ...DEFAULT_PERMISSION_POLICY,
     defaultAction: action,
     ask: async (input) => {
+      // Fail closed when nothing can answer: a piped run has no TTY, and
+      // blocking on stdin would hang the whole task instead of denying.
+      if (!process.stdin.isTTY) {
+        process.stderr.write(`permission denied (no TTY to ask): ${input.tool} ${input.pattern}\n`);
+        return false;
+      }
       process.stderr.write(`permission required: ${input.tool} ${input.pattern} [y/N] `);
       const answer = await readLine();
       return /^y(es)?$/i.test(answer.trim());
@@ -348,7 +354,11 @@ function commonOptions(cmd: Command): Command {
       collect,
       []
     )
-    .option("--permission <mode>", "allow | ask | deny for unmatched commands", "allow")
+    .option(
+      "--permission <mode>",
+      "allow | ask | deny for unmatched commands (default: ask, which fails closed without a TTY)",
+      "ask"
+    )
     .option("--model <name>", "model for the tool agent / chat", "deepseek-chat")
     .option(
       "--base-url <url>",
@@ -547,7 +557,11 @@ program
   .option("--max-turns <n>", "max agent turns", "40")
   .option("--runs-dir <dir>", "directory for sessions", "runs")
   .option("--verify <cmd>", "verification command (repeatable)", collect, [])
-  .option("--permission <mode>", "allow | ask | deny", "allow")
+  .option(
+    "--permission <mode>",
+    "allow | ask | deny (default: ask, fails closed without a TTY)",
+    "ask"
+  )
   .option("--max-tokens <n>", "hard token budget for the task")
   .option("--max-wall-ms <n>", "hard wall-clock budget in ms")
   .option("--max-usd <n>", "hard estimated USD budget")

@@ -58,7 +58,9 @@ jobs:
       - name: CLI smoke test
         run: |
           node dist/cli.js --help
-          node dist/cli.js report --json --runs-dir /tmp/empty-runs || true
+          # `report` on a missing runs dir must succeed with an empty list, not
+          # fail; assert that instead of swallowing the exit code.
+          node dist/cli.js report --json --runs-dir /tmp/empty-runs | grep -qx '\[\]'
 
       - name: CLI end-to-end
         if: matrix.node == 20
@@ -77,5 +79,10 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: pnpm audit (high and above)
-        run: pnpm audit --audit-level high
+      # Runtime dependencies are the blocking gate: a vulnerable package that
+      # ships with `bin` matters. Dev-only findings are reported but do not
+      # fail the build, so a test-runner advisory cannot block every PR.
+      - name: audit runtime dependencies (blocking)
+        run: pnpm audit --prod --audit-level high
+      - name: audit dev dependencies (report only)
+        run: pnpm audit --audit-level high || true

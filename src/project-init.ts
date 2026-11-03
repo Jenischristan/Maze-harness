@@ -9,33 +9,14 @@ export interface InitResult {
   root: string;
 }
 
-/** Options persisted to `.dream/config.json` by `/init`. */
-export interface ProjectConfig {
-  runsDir: string;
-  repo: string;
-  initDir: string;
-  evaluator: string;
-  workers: number;
-  rounds: number;
-  roundLimit: number;
-  revisions: number;
-  normalize: "relativeToBaseline" | "none";
-  scoreGrid?: readonly number[];
-  seed: number;
-}
-
-export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
-  runsDir: "runs",
-  repo: "runs/_repo",
-  initDir: "examples/toy-task/init",
-  evaluator: "python3 examples/toy-task/evaluator/evaluate.py {workspace}",
-  workers: 3,
-  rounds: 3,
-  roundLimit: 6,
-  revisions: 2,
-  normalize: "relativeToBaseline",
-  seed: 1
-};
+/**
+ * `/init` writes scaffolding only — memory, MCP config, skills, `.gitignore`.
+ *
+ * It deliberately writes **no** `.dream/config.json`: configuration is flags +
+ * environment only (see `src/config.ts`), so a persisted defaults file would be
+ * a second source of truth that nothing reads. Earlier versions wrote one and
+ * committed it; both are gone.
+ */
 
 const MEMORY_TEMPLATE = `# Project memory
 
@@ -112,11 +93,13 @@ dist/
  *   .dream/memory.md     project memory (also seeds AGENTS.md)
  *   .dream/mcp.json      MCP server definitions
  *   .dream/skills/…      skill catalogue
- *   .dream/config.json   persisted project defaults
+ *
+ * There is no `config.json`: runtime configuration comes from flags and
+ * environment variables only.
  */
 export async function initProject(
   root: string,
-  opts: { options?: ProjectConfig; force?: boolean } = {}
+  opts: { force?: boolean } = {}
 ): Promise<InitResult> {
   const base = resolve(root);
   const created: string[] = [];
@@ -132,28 +115,11 @@ export async function initProject(
     created.push(rel);
   };
 
-  const options = opts.options ?? DEFAULT_PROJECT_CONFIG;
-  const config = {
-    version: 1,
-    runsDir: options.runsDir,
-    repo: options.repo,
-    initDir: options.initDir,
-    evaluator: options.evaluator,
-    workers: options.workers,
-    rounds: options.rounds,
-    roundLimit: options.roundLimit,
-    revisions: options.revisions,
-    normalize: options.normalize,
-    scoreGrid: options.scoreGrid,
-    seed: options.seed
-  };
-
   await write(".dream/memory.md", MEMORY_TEMPLATE);
   await write("AGENTS.md", MEMORY_TEMPLATE);
   await write(".dream/mcp.json", MCP_TEMPLATE);
   await write(".dream/MCP.md", MCP_README);
   await write(".dream/skills/example/SKILL.md", SKILL_TEMPLATE);
-  await write(".dream/config.json", `${JSON.stringify(config, null, 2)}\n`);
   await write(".gitignore", GITIGNORE_TEMPLATE);
   await mkdir(join(base, "runs"), { recursive: true });
   return { created, skipped, root: base };

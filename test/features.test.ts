@@ -293,7 +293,6 @@ describe("project init", () => {
         "AGENTS.md",
         ".dream/mcp.json",
         ".dream/skills/example/SKILL.md",
-        ".dream/config.json",
         ".gitignore"
       ])
     );
