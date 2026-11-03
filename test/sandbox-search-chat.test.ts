@@ -1,47 +1,31 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { globToRegExp, grepTool, globTool } from "../src/tools/search.js";
 import { runPolicyInSandbox } from "../src/policies/sandbox.js";
 import { buildSession, sessionsDir } from "../src/chat.js";
-import type { DiscoveryTree, ToolContext } from "../src/types.js";
+import type { DiscoveryTree } from "../src/types.js";
+import { emptyTree, makeTempDir, toolContext } from "./helpers/fixtures.js";
+import { loadVariantSource, seedPolicySource } from "../src/policies/seed.js";
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-sbx-"));
+  const t = await makeTempDir("dh-ssc");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
   delete process.env.MAZE_SESSIONS_DIR;
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
-function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
-  return {
-    workspaceDir: dir,
-    readFiles: new Set(),
-    readHashes: new Map(),
-    modifiedFiles: new Set(),
-    maxOutputBytes: 32 * 1024,
-    permission: { defaultAction: "allow", rules: [] },
-    hooks: { register: () => undefined, list: () => [], runAll: async () => [] },
-    ...overrides
-  };
-}
+const ctx = (overrides: Record<string, unknown> = {}) => toolContext(dir, overrides as never);
 
 function tree(): DiscoveryTree {
-  return {
-    runId: "r",
-    treeIndex: 0,
-    baselineScore: 1,
-    maxParallelism: 2,
-    roundsLimit: 2,
-    policyId: "p",
-    createdAt: "t",
-    nodes: []
-  };
+  return emptyTree({ roundsLimit: 2 });
 }
 
 describe("search: engine fallbacks and error paths", () => {
@@ -191,5 +175,29 @@ describe("chat: session wiring", () => {
   it("honours MAZE_SESSIONS_DIR", () => {
     process.env.MAZE_SESSIONS_DIR = join(dir, "env-sessions");
     expect(sessionsDir()).toBe(join(dir, "env-sessions"));
+  });
+});
+
+describe("policies/seed", () => {
+  it("loads the fixed variant source", async () => {
+    const src = await loadVariantSource("fixed");
+    expect(src.policyId).toBe("fixed");
+    expect(src.source).toContain("class");
+  });
+
+  it("loads the greedy variant with a custom policy id", async () => {
+    const src = await loadVariantSource("greedy", "greedy-7");
+    expect(src.policyId).toBe("greedy-7");
+    expect(src.source.length).toBeGreaterThan(0);
+  });
+
+  it("seeds greedy when the policy id starts with greedy, else fixed", async () => {
+    expect((await seedPolicySource("greedy-1")).source).toBe(
+      (await loadVariantSource("greedy")).source
+    );
+    expect((await seedPolicySource("other")).source).toBe(
+      (await loadVariantSource("fixed")).source
+    );
+    expect((await seedPolicySource()).policyId).toBe("fixed");
   });
 });

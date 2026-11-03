@@ -1,8 +1,10 @@
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listRuns, readRun } from "../src/runs/report.js";
+import { RunStore } from "../src/runs/store.js";
+import type { DiscoveryTree, PolicyVersionRecord, ReplayReport } from "../src/types.js";
 
 let tmp = "";
 
@@ -86,5 +88,64 @@ describe("report discovers runs by state, not by name", () => {
     await mkdir(join(tmp, "not-a-run"), { recursive: true });
     expect(await listRuns(tmp)).toEqual([]);
     expect(await listRuns(join(tmp, "does-not-exist"))).toEqual([]);
+  });
+});
+
+async function tree(index: number): Promise<DiscoveryTree> {
+  return {
+    runId: "r",
+    treeIndex: index,
+    baselineScore: 1,
+    maxParallelism: 2,
+    roundsLimit: 2,
+    policyId: "p",
+    createdAt: "t",
+    nodes: []
+  };
+}
+
+describe("RunStore", () => {
+  it("saves and loads trees sorted by index", async () => {
+    const store = new RunStore({ rootDir: tmp, runId: "r" });
+    await store.saveTree(await tree(1));
+    await store.saveTree(await tree(0));
+    const trees = await store.loadTrees();
+    expect(trees.map((t) => t.treeIndex)).toEqual([0, 1]);
+  });
+
+  it("returns no trees when the directory is absent", async () => {
+    const store = new RunStore({ rootDir: tmp, runId: "none" });
+    expect(await store.loadTrees()).toEqual([]);
+  });
+
+  it("saves a policy version as source and JSON", async () => {
+    const store = new RunStore({ rootDir: tmp, runId: "r" });
+    const record: PolicyVersionRecord = {
+      policyId: "p",
+      source: "class X {}",
+      meanScore: 1,
+      scores: [1],
+      selected: true,
+      createdAt: "t"
+    };
+    await store.savePolicyVersion(2, record);
+    const base = join(tmp, "r", "policies", "t0002-p");
+    expect(await readFile(`${base}.ts`, "utf8")).toBe("class X {}");
+    expect(JSON.parse(await readFile(`${base}.json`, "utf8")).policyId).toBe("p");
+  });
+
+  it("saves replay reports", async () => {
+    const store = new RunStore({ rootDir: tmp, runId: "r" });
+    const reports = [{ treeIndex: 0 }] as unknown as ReplayReport[];
+    await store.saveReplayReports(1, "p", reports);
+    const raw = JSON.parse(await readFile(join(tmp, "r", "reports", "t0001-p.json"), "utf8"));
+    expect(raw).toHaveLength(1);
+  });
+
+  it("round-trips state and returns null when absent", async () => {
+    const store = new RunStore({ rootDir: tmp, runId: "r" });
+    expect(await store.loadState()).toBeNull();
+    await store.saveState({ round: 3 });
+    expect(await store.loadState()).toEqual({ round: 3 });
   });
 });

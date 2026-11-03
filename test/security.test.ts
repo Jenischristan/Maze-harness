@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { Readable } from "node:stream";
 import { mkdtemp, mkdir, rm, symlink, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { decide, DEFAULT_PERMISSION_POLICY } from "../src/tools/permissions.js";
 import { compact, estimateTokens } from "../src/context/compaction.js";
 import { SessionStore } from "../src/session/store.js";
 import type { ChatMessage } from "../src/types.js";
+import { collectText } from "../src/util/stream.js";
 
 let dir: string;
 
@@ -161,5 +163,32 @@ describe("CTX-001 / SESS-001: compaction shrinks the projection", () => {
       0
     );
     expect(tokensAfter).toBeLessThan(tokensBefore);
+  });
+});
+
+describe("collectText", () => {
+  it("collects a streamed body and flushes a trailing partial sequence", async () => {
+    const chunks = [Buffer.from("ab"), Buffer.from([0xe4, 0xb8])];
+    const sink = collectText(Readable.from(chunks));
+    await new Promise((r) => setTimeout(r, 10));
+    // A dangling partial multi-byte tail is dropped, not emitted as U+FFFD.
+    expect(sink.flush()).toBe("ab");
+    expect(sink.capped).toBe(false);
+  });
+
+  it("caps output at the byte budget and stops counting", async () => {
+    const sink = collectText(Readable.from([Buffer.from("abcdef"), Buffer.from("ghij")]), {
+      cap: 4
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sink.capped).toBe(true);
+    expect(sink.text).toBe("abcd");
+    expect(sink.flush()).toBe("abcd");
+  });
+
+  it("accepts string chunks", async () => {
+    const sink = collectText(Readable.from(["hello"]));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sink.flush()).toBe("hello");
   });
 });

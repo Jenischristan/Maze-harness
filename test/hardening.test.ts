@@ -1,21 +1,39 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, rm, utimes, readFile, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { REDACTED, redact, redactValue } from "../src/util/redact.js";
-import { parseCommandLine, parseCommandSpec, argvJoin, quoteArg } from "../src/util/args.js";
+import {
+  CommandParseError,
+  parseCommandLine,
+  parseCommandSpec,
+  argvJoin,
+  quoteArg
+} from "../src/util/args.js";
 import { childEnv, isDeniedEnvKey, taskChildEnv } from "../src/util/env.js";
 import { Budget, describeBudgetExceeded } from "../src/util/limits.js";
-import { withRetry, isRetryableError, computeDelay } from "../src/util/retry.js";
+import { withRetry, isRetryableError, computeDelay, sleep } from "../src/util/retry.js";
 import {
   CURRENT_SCHEMA,
   migrate,
   registerUpcaster,
   SchemaVersionError,
-  stampSchema
+  stampSchema,
+  hasFullMigrationChain
 } from "../src/util/schema.js";
 import { hashLine, scanJsonl, withIntegrity } from "../src/util/integrity.js";
-import { RunLock, LockHeldError } from "../src/util/lock.js";
+import { RunLock, LockHeldError, lockPresent, runLockPath } from "../src/util/lock.js";
+import { findFuzzy } from "../src/tools/fuzzy-match.js";
+
+let dir = "";
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "dh-merged-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
 
 describe("redaction", () => {
   it("scrubs bearer headers and provider key shapes", () => {
@@ -306,5 +324,266 @@ describe("run lock", () => {
     expect(reclaimed).toBe(true);
     expect(lock.isHeld).toBe(false);
     await l2.release();
+  });
+});
+
+describe("util/schema", () => {
+  it("stamps the current schema", () => {
+    expect(stampSchema({ a: 1 })).toEqual({ a: 1, schema: CURRENT_SCHEMA });
+  });
+
+  it("rejects non-objects and invalid versions", () => {
+    expect(() => migrate("k", null as never)).toThrow(SchemaVersionError);
+    expect(() => migrate("k", { schema: 0 })).toThrow(/invalid schema version/);
+    expect(() => migrate("k", { schema: 1.5 })).toThrow(/invalid schema version/);
+  });
+
+  it("rejects a record from a newer build", () => {
+    expect(() => migrate("k", { schema: CURRENT_SCHEMA + 1 }, CURRENT_SCHEMA)).toThrow(/upgrade/);
+  });
+
+  it("stamps the target when there is no chain to walk", () => {
+    expect(migrate("plain", { a: 1 }, CURRENT_SCHEMA).schema).toBe(CURRENT_SCHEMA);
+  });
+
+  it("fails loudly when a legacy-shaped record has no upcaster", () => {
+    expect(() => migrate("live-manifest", { version: 1 }, CURRENT_SCHEMA)).toThrow(/no migration/);
+  });
+
+  it("walks a registered upcaster chain", () => {
+    registerUpcaster("chain-test", 1, (r) => ({ ...r, one: true }));
+    registerUpcaster("chain-test", 2, (r) => ({ ...r, two: true }));
+    const out = migrate("chain-test", { schema: 1 }, 3);
+    expect(out.schema).toBe(3);
+    expect(out).toMatchObject({ one: true, two: true });
+    expect(hasFullMigrationChain("chain-test")).toBe(true);
+    expect(hasFullMigrationChain("nope")).toBe(false);
+  });
+
+  it("rejects an upcaster that returns no record", () => {
+    registerUpcaster("bad-upcast", 1, () => null as never);
+    expect(() => migrate("bad-upcast", { schema: 1 }, 2)).toThrow(/returned no record/);
+  });
+});
+
+describe("util/args", () => {
+  it("parses quoted and escaped command lines", () => {
+    expect(parseCommandLine(`a "b c" 'd e' f\\ g`)).toEqual(["a", "b c", "d e", "f g"]);
+    expect(parseCommandLine("  spaced   out  ")).toEqual(["spaced", "out"]);
+    expect(parseCommandLine("")).toEqual([]);
+  });
+
+  it("handles a trailing backslash and a backslash inside quotes", () => {
+    expect(parseCommandLine("a\\")).toEqual(["a\\"]);
+    expect(parseCommandLine(`"a\\\\b"`)).toEqual(["a\\b"]);
+  });
+
+  it("throws on an unterminated quote", () => {
+    expect(() => parseCommandLine(`a "b`)).toThrow(CommandParseError);
+    expect(() => parseCommandLine(`a 'b`)).toThrow(/unterminated/);
+  });
+
+  it("quotes arguments only when needed", () => {
+    expect(quoteArg("plain")).toBe("plain");
+    expect(quoteArg("")).toBe('""');
+    expect(quoteArg("a b")).toBe('"a b"');
+    expect(quoteArg('a"b')).toBe('"a\\"b"');
+    expect(quoteArg("a\\b")).toBe('"a\\\\b"');
+    expect(argvJoin(["a", "b c"])).toBe(`a "b c"`);
+  });
+
+  it("parses JSON array command specs", () => {
+    expect(parseCommandSpec('["npx","-y","pkg"]')).toEqual(["npx", "-y", "pkg"]);
+  });
+
+  it("rejects malformed JSON command specs", () => {
+    expect(() => parseCommandSpec("[bad")).toThrow(/does not parse/);
+    expect(() => parseCommandSpec("[]")).toThrow(/non-empty array/);
+    expect(() => parseCommandSpec('["a",1]')).toThrow(/non-empty array/);
+    // A JSON object is not a command array; it is parsed as a quoted word.
+    expect(parseCommandSpec('{"a":1}')).toEqual(["{a:1}"]);
+  });
+
+  it("rejects an empty plain command", () => {
+    expect(() => parseCommandSpec("   ")).toThrow(/command is empty/);
+  });
+});
+
+describe("util/limits budget", () => {
+  it("reports each exceeded limit in priority order", () => {
+    const b = new Budget({
+      maxTurns: 1,
+      maxTokens: 10,
+      maxUsd: 1,
+      maxToolCalls: 2,
+      maxWallMs: 100_000
+    });
+    expect(b.check()).toBeNull();
+    b.turn();
+    expect(b.check()).toMatchObject({ kind: "turns", used: 1 });
+    const t = new Budget({ maxTokens: 5 });
+    t.spend(5, 0);
+    expect(t.check()).toMatchObject({ kind: "tokens", used: 5 });
+    const u = new Budget({ maxUsd: 0.5 });
+    u.spend(0, 0.5);
+    expect(u.check()).toMatchObject({ kind: "usd", used: 0.5 });
+    const c = new Budget({ maxToolCalls: 1 });
+    c.toolCalls(1);
+    expect(c.check()).toMatchObject({ kind: "tool-calls" });
+    const w = new Budget({ maxWallMs: 0 }, Date.now() - 1000);
+    expect(w.check()).toMatchObject({ kind: "wall" });
+  });
+
+  it("ignores non-finite and non-positive spend", () => {
+    const b = new Budget({ maxTokens: 1, maxUsd: 1 });
+    b.spend(Number.NaN, Number.NaN);
+    b.spend(-5, -5);
+    b.toolCalls(Number.NaN);
+    b.toolCalls(-1);
+    expect(b.used).toMatchObject({ tokens: 0, usd: 0, toolCalls: 0 });
+  });
+
+  it("describes every budget kind", () => {
+    expect(describeBudgetExceeded({ kind: "turns", limit: 3, used: 3 })).toContain("turn limit 3");
+    expect(describeBudgetExceeded({ kind: "tokens", limit: 1, used: 1 })).toContain("token limit");
+    expect(describeBudgetExceeded({ kind: "wall", limit: 1, used: 1 })).toContain(
+      "wall-clock limit"
+    );
+    expect(describeBudgetExceeded({ kind: "usd", limit: 1, used: 1 })).toContain("USD limit");
+    expect(describeBudgetExceeded({ kind: "tool-calls", limit: 1, used: 1 })).toContain(
+      "tool-call limit"
+    );
+  });
+});
+
+describe("util/lock", () => {
+  async function writeLock(info: Record<string, unknown>): Promise<string> {
+    const path = join(dir, "l");
+    await writeFile(path, JSON.stringify(info));
+    return path;
+  }
+
+  it("exposes the canonical lock path and presence check", () => {
+    expect(runLockPath("/runs")).toBe(join("/runs", ".dream.lock"));
+    expect(lockPresent(dir)).toBe(false);
+  });
+
+  it("blocks a second acquire and releases cleanly", async () => {
+    const path = join(dir, "l");
+    const a = new RunLock({ path, runId: "a" });
+    await a.acquire();
+    expect(a.isHeld).toBe(true);
+    expect(lockPresent(dir)).toBe(false); // presence is checked against the runs dir
+    const b = new RunLock({ path, runId: "b" });
+    await expect(b.acquire()).rejects.toBeInstanceOf(LockHeldError);
+    await a.release();
+    await b.acquire();
+    expect(b.isHeld).toBe(true);
+    await b.release();
+  });
+
+  it("reclaims a lock whose pid is dead", async () => {
+    const path = await writeLock({
+      pid: 999_999,
+      host: hostname(),
+      runId: "dead",
+      acquiredAt: new Date().toISOString()
+    });
+    const reasons: string[] = [];
+    const l = new RunLock({ path, runId: "x", onReclaim: (_i, r) => reasons.push(r) });
+    await l.acquire();
+    expect(l.isHeld).toBe(true);
+    expect(reasons[0]).toMatch(/not running/);
+    await l.release();
+  });
+
+  it("reclaims an unreadable lock file", async () => {
+    const path = join(dir, "l");
+    await writeFile(path, "{not json");
+    const l = new RunLock({ path, runId: "x" });
+    await l.acquire();
+    expect(l.isHeld).toBe(true);
+    await l.release();
+  });
+
+  it("reclaims a lock older than maxAgeMs", async () => {
+    const path = await writeLock({
+      pid: process.pid,
+      host: hostname(),
+      runId: "old",
+      acquiredAt: new Date().toISOString()
+    });
+    const past = new Date(Date.now() - 10_000);
+    await utimes(path, past, past);
+    const l = new RunLock({ path, runId: "x", maxAgeMs: 1000 });
+    await l.acquire();
+    expect(l.isHeld).toBe(true);
+    await l.release();
+  });
+
+  it("treats an old foreign-host lock as stale but a fresh one as held", async () => {
+    const path = await writeLock({
+      pid: process.pid,
+      host: "elsewhere",
+      runId: "o",
+      acquiredAt: new Date().toISOString()
+    });
+    const fresh = new RunLock({ path, runId: "x" });
+    await expect(fresh.acquire()).rejects.toBeInstanceOf(LockHeldError);
+    const past = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(path, past, past);
+    const stale = new RunLock({ path, runId: "y" });
+    await stale.acquire();
+    expect(stale.isHeld).toBe(true);
+    await stale.release();
+  });
+
+  it("does not delete a foreign process's lock on release", async () => {
+    const path = join(dir, "l");
+    const l = new RunLock({ path, runId: "x" });
+    await l.acquire();
+    await writeFile(
+      path,
+      JSON.stringify({ pid: 1, host: "elsewhere", runId: "other", acquiredAt: "t" })
+    );
+    await l.release();
+    expect(JSON.parse(await readFile(path, "utf8")).runId).toBe("other");
+  });
+
+  it("heartbeat and release are no-ops when not held", async () => {
+    const path = join(dir, "l");
+    const l = new RunLock({ path, runId: "x" });
+    await expect(l.heartbeat()).resolves.toBeUndefined();
+    await expect(l.release()).resolves.toBeUndefined();
+  });
+
+  it("heartbeat touches the lock mtime", async () => {
+    const path = join(dir, "l");
+    const l = new RunLock({ path, runId: "x" });
+    await l.acquire();
+    const past = new Date(Date.now() - 10_000);
+    await utimes(path, past, past);
+    await l.heartbeat();
+    const raw = JSON.parse(await readFile(path, "utf8"));
+    expect(raw.runId).toBe("x");
+    await l.release();
+  });
+});
+
+describe("tools/fuzzy-match edge cases", () => {
+  it("returns null for empty needles and missing matches", () => {
+    expect(findFuzzy("abc", "")).toEqual({ match: null, ambiguous: false });
+    expect(findFuzzy("abc", "zzz")).toEqual({ match: null, ambiguous: false });
+  });
+
+  it("falls back to an indentation-insensitive match with exact offsets", () => {
+    const text = "function f() {\n    return 1;\n}\n";
+    const r = findFuzzy(text, "function f() {\nreturn 1;");
+    expect(r.match?.strategy).toBe("whitespace");
+    expect(text.slice(r.match!.start, r.match!.end)).toBe("function f() {\n    return 1;");
+  });
+
+  it("handles whitespace-only needles as no match", () => {
+    expect(findFuzzy("a  b", "   ").match).toBeNull();
   });
 });

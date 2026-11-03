@@ -125,6 +125,15 @@ export interface SubAgentRunOptions {
   apiKey: string;
   contextWindow?: number;
 
+  /** Provider retry attempt count. Keep low in tests to avoid slow backoff. */
+  retries?: number;
+
+  /** Base delay between provider retries, in milliseconds. */
+  retryBaseMs?: number;
+
+  /** Per-request timeout for the provider, in milliseconds. */
+  requestTimeoutMs?: number;
+
   permission?: "allow" | "ask" | "deny";
 
   permissionPolicy?: PermissionPolicy;
@@ -168,7 +177,10 @@ export async function runSubAgent(opts: SubAgentRunOptions): Promise<SubAgentRes
     baseUrl: opts.baseUrl,
     apiKey: opts.apiKey,
     model,
-    contextWindow: opts.contextWindow
+    contextWindow: opts.contextWindow,
+    retries: opts.retries,
+    retryBaseMs: opts.retryBaseMs,
+    requestTimeoutMs: opts.requestTimeoutMs
   });
   const session = new SessionStore({
     dir: resolve(opts.sessionsDir ?? sessionsDir(), "subagents"),
@@ -268,6 +280,15 @@ export function subAgentTool(opts: {
   contextWindow?: number;
   registry?: ToolRegistry;
 
+  /** Provider retry attempt count. Keep low in tests to avoid slow backoff. */
+  retries?: number;
+
+  /** Base delay between provider retries, in milliseconds. */
+  retryBaseMs?: number;
+
+  /** Per-request timeout for the provider, in milliseconds. */
+  requestTimeoutMs?: number;
+
   permissionPolicy?: PermissionPolicy;
 
   approve?: (input: {
@@ -335,6 +356,9 @@ export function subAgentTool(opts: {
           baseUrl: opts.baseUrl,
           apiKey: opts.apiKey,
           contextWindow: opts.contextWindow,
+          retries: opts.retries,
+          retryBaseMs: opts.retryBaseMs,
+          requestTimeoutMs: opts.requestTimeoutMs,
           registry: opts.registry,
           permissionPolicy: opts.permissionPolicy,
           approve: opts.approve,

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compilePolicy } from "../src/policies/loader.js";
@@ -10,6 +10,7 @@ import {
   sandboxEnv
 } from "../src/policies/sandbox.js";
 import { DEFAULT_SCORE_CONFIG } from "../src/score.js";
+import { seedPolicySource } from "../src/policies/seed.js";
 import { syntheticTree } from "./synthetic.js";
 
 const tree = syntheticTree({
@@ -19,6 +20,10 @@ const tree = syntheticTree({
   maxParallelism: 2,
   roundsLimit: 5
 });
+
+function emptyTree(): typeof tree {
+  return syntheticTree({ seed: 1, branches: 0, refinements: 0, maxParallelism: 2, roundsLimit: 2 });
+}
 
 const goodPolicy = `
 import { ROOT_ID } from "x";
@@ -68,6 +73,16 @@ async function sandbox(source: string, timeoutMs = 4000) {
     config: { timeoutMs, memoryMb: 256, scoreConfig: DEFAULT_SCORE_CONFIG }
   });
 }
+
+let dir = "";
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "dh-merged-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
 
 describe("policy sandbox", () => {
   it("replays a valid policy and returns a finite score", async () => {
@@ -178,4 +193,110 @@ describe("policy sandbox hardening", () => {
     expect(res.report.score).toBe(Number.NEGATIVE_INFINITY);
     expect(res.report.error).toBeTruthy();
   });
+});
+
+describe("policy sandbox: failure containment", () => {
+  it("uses a whitelisted environment only", () => {
+    const env = sandboxEnv({
+      PATH: "/bin",
+      HOME: "/h",
+      DREAM_API_KEY: "secret",
+      LANG: "C"
+    } as never);
+    expect(env.PATH).toBe("/bin");
+    expect(env.HOME).toBe("/h");
+    expect(env.LANG).toBe("C");
+    expect(env.DREAM_API_KEY).toBeUndefined();
+    for (const key of Object.keys(env)) {
+      expect(SANDBOX_ENV_ALLOWLIST).toContain(key);
+    }
+  });
+
+  it("scores a valid seeded policy", async () => {
+    const seed = await seedPolicySource("fixed");
+    const bundlePath = join(dir, "policy.ts");
+    await writeFile(bundlePath, seed.source);
+    const result = await runPolicyInSandbox({
+      bundlePath,
+      tree: emptyTree(),
+      priorHistory: [],
+      policyId: "fixed",
+      config: {
+        timeoutMs: 60_000,
+        memoryMb: 256,
+        scoreConfig: { beta1: 0.002, beta2: 0.01, normalize: "relativeToBaseline" }
+      }
+    });
+    expect(typeof result.report.score).toBe("number");
+    expect(result.report.treeIndex).toBe(emptyTree().treeIndex);
+    expect(result.failed).toBe(false);
+  }, 120_000);
+
+  it("contains a module that does not default-export a class", async () => {
+    const bundlePath = join(dir, "bad.ts");
+    await writeFile(bundlePath, "export const nope = 1;\n");
+    const result = await runPolicyInSandbox({
+      bundlePath,
+      tree: emptyTree(),
+      priorHistory: [],
+      policyId: "bad",
+      config: {
+        timeoutMs: 60_000,
+        memoryMb: 256,
+        scoreConfig: { beta1: 0, beta2: 0, normalize: "none" }
+      }
+    });
+    expect(result.failed).toBe(true);
+    expect(result.report.error).toContain("default-export");
+  }, 120_000);
+
+  it("contains a policy whose solve throws", async () => {
+    const bundlePath = join(dir, "throw.ts");
+    await writeFile(
+      bundlePath,
+      "export default class P { async solve() { throw new Error('kaboom'); } }\n"
+    );
+    const result = await runPolicyInSandbox({
+      bundlePath,
+      tree: emptyTree(),
+      priorHistory: [],
+      policyId: "throw",
+      config: {
+        timeoutMs: 60_000,
+        memoryMb: 256,
+        scoreConfig: { beta1: 0, beta2: 0, normalize: "none" }
+      }
+    });
+    expect(result.failed).toBe(true);
+    expect(result.report.error).toBe("kaboom");
+    expect(result.report.illegal).toBe(false);
+  }, 120_000);
+
+  it("marks a policy that violates the batch rules as illegal", async () => {
+    const bundlePath = join(dir, "illegal.ts");
+    await writeFile(
+      bundlePath,
+      [
+        "export default class P {",
+        "  async solve(env) {",
+        "    await env.probeBatch(['not-a-legal-cell']);",
+        "  }",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const result = await runPolicyInSandbox({
+      bundlePath,
+      tree: emptyTree(),
+      priorHistory: [],
+      policyId: "illegal",
+      config: {
+        timeoutMs: 60_000,
+        memoryMb: 256,
+        scoreConfig: { beta1: 0, beta2: 0, normalize: "none" }
+      }
+    });
+    expect(result.failed).toBe(true);
+    expect(result.reason).toBe("illegal");
+  }, 120_000);
 });

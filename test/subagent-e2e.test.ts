@@ -145,13 +145,16 @@ describe("delegate tool", () => {
       model: "deepseek-chat",
       baseUrl: "http://127.0.0.1:1",
       apiKey: "k",
-      sessionsDir: join(dir, "sessions")
+      sessionsDir: join(dir, "sessions"),
+      // One attempt, no backoff: the port is closed so this fails immediately.
+      retries: 1,
+      retryBaseMs: 1
     });
     const res = await tool.execute({ agent: "expl", task: "look" }, {} as never);
     // The provider is unreachable, so the loop stops with an error, not a throw.
     expect(res.ok).toBe(false);
     expect(res.content).toContain("stop=error");
-  }, 60_000);
+  }, 15_000);
 
   it("includes custom subagent definitions in the tool contract", () => {
     const tool = subAgentTool({
@@ -170,5 +173,46 @@ describe("delegate tool", () => {
       ]
     });
     expect(tool.description).toContain("custom (does custom things)");
+  });
+});
+
+describe("subagent helpers", () => {
+  it("finds a subagent by exact name, prefix, or not at all", async () => {
+    const { findSubAgent, SUBAGENTS, specFromDefinition } = await import("../src/subagents.js");
+    expect(findSubAgent("explore")!.name).toBe("explore");
+    expect(findSubAgent("  EXPLORE ")!.name).toBe("explore");
+    expect(findSubAgent("expl")!.name).toBe("explore");
+    expect(findSubAgent("")).toBeNull();
+    expect(findSubAgent("zzz")).toBeNull();
+    expect(SUBAGENTS.some((s) => s.name === "verify")).toBe(true);
+    const spec = specFromDefinition({
+      name: "custom",
+      description: "d",
+      prompt: "p",
+      mode: "subagent",
+      source: "file",
+      tools: ["read"],
+      maxTurns: 3,
+      model: "m",
+      readOnly: true
+    } as never);
+    expect(spec).toMatchObject({ name: "custom", maxTurns: 3, readOnly: true });
+  });
+
+  it("delegate rejects unknown agents and empty tasks", async () => {
+    const { subAgentTool } = await import("../src/subagents.js");
+    const tool = subAgentTool({
+      workspaceDir: dir,
+      model: "deepseek-chat",
+      baseUrl: "http://127.0.0.1:1",
+      apiKey: "k"
+    });
+    expect((await tool.execute({ agent: "nope", task: "x" }, {} as never)).error).toBe(
+      "unknown-subagent"
+    );
+    expect((await tool.execute({ agent: "explore", task: "  " }, {} as never)).error).toBe(
+      "no-task"
+    );
+    expect(tool.description).toContain("explore");
   });
 });

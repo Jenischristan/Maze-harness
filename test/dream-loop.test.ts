@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { planGridForRound, runDream } from "../src/loop/dream.js";
@@ -7,6 +6,7 @@ import { RunStore } from "../src/runs/store.js";
 import { CommandEvaluator } from "../src/evaluator.js";
 import { ScriptedAgent } from "../src/agents/scripted.js";
 import type { DiscoveryTree, ExplorationPolicy, GridPlan, TaskSpec } from "../src/types.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 const toy = join(process.cwd(), "examples/toy-task");
 
@@ -21,13 +21,16 @@ const task: TaskSpec = {
 };
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-dreamx-"));
+  const t = await makeTempDir("dh-dreamx");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
 function historyEntry(
@@ -83,6 +86,42 @@ function policy(planGrid?: (ctx: unknown) => unknown): ExplorationPolicy {
       /* plan-only policy */
     },
     ...(planGrid ? { planGrid: planGrid as never } : {})
+  };
+}
+
+function dreamPolicySource(): string {
+  return `
+    export default class P {
+      async solve(env) {
+        if (env.legalRoots() > 0) await env.probeBatch(["root"]);
+      }
+      planGrid() { return { branchCount: 1, refineCount: 0, reason: "one" }; }
+    }
+  `;
+}
+
+function dreamConfig(runId: string, rounds: number, extra: Record<string, unknown> = {}) {
+  return {
+    runId,
+    repoDir: join(dir, `${runId}-repo`),
+    task,
+    agent: new ScriptedAgent({ seed: 1, failRate: 0 }),
+    evaluator: new CommandEvaluator({
+      command: task.evaluatorCommand,
+      timeoutMs: task.evaluatorTimeoutMs
+    }),
+    developer: { revise: async () => dreamPolicySource() },
+    seedPolicy: { policyId: "fixed", source: dreamPolicySource() },
+    rounds,
+    revisions: 0,
+    maxParallelism: 1,
+    roundsLimit: 1,
+    scoreConfig: { beta1: 0.002, beta2: 0.01, normalize: "none" as const },
+    betaGrid: null,
+    sandbox: { timeoutMs: 20_000, memoryMb: 256 },
+    runRoot: dir,
+    mode: "fixed" as const,
+    ...extra
   };
 }
 
@@ -193,42 +232,6 @@ describe("planGridForRound", () => {
     expect(events).toEqual(["grid-planned"]);
   });
 });
-
-function dreamPolicySource(): string {
-  return `
-    export default class P {
-      async solve(env) {
-        if (env.legalRoots() > 0) await env.probeBatch(["root"]);
-      }
-      planGrid() { return { branchCount: 1, refineCount: 0, reason: "one" }; }
-    }
-  `;
-}
-
-function dreamConfig(runId: string, rounds: number, extra: Record<string, unknown> = {}) {
-  return {
-    runId,
-    repoDir: join(dir, `${runId}-repo`),
-    task,
-    agent: new ScriptedAgent({ seed: 1, failRate: 0 }),
-    evaluator: new CommandEvaluator({
-      command: task.evaluatorCommand,
-      timeoutMs: task.evaluatorTimeoutMs
-    }),
-    developer: { revise: async () => dreamPolicySource() },
-    seedPolicy: { policyId: "fixed", source: dreamPolicySource() },
-    rounds,
-    revisions: 0,
-    maxParallelism: 1,
-    roundsLimit: 1,
-    scoreConfig: { beta1: 0.002, beta2: 0.01, normalize: "none" as const },
-    betaGrid: null,
-    sandbox: { timeoutMs: 20_000, memoryMb: 256 },
-    runRoot: dir,
-    mode: "fixed" as const,
-    ...extra
-  };
-}
 
 describe("runDream: fixed mode, resume and abort", () => {
   it("runs fixed-mode rounds and records frozen replay scores", async () => {

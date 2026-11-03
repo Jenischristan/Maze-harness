@@ -1,10 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
 import { GitWorkspace } from "../src/workspace/git.js";
 import { LiveEnv } from "../src/env/live.js";
 import type { DiscoveryAgent, Evaluator, TaskSpec } from "../src/types.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 const toyTask = join(process.cwd(), "examples/toy-task");
 
@@ -20,9 +19,12 @@ const task: TaskSpec = {
 
 let tmp = "";
 let ws: GitWorkspace;
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "dh-livex-"));
+  const t = await makeTempDir("dh-livex");
+  tmp = t.dir;
+  cleanup = t.remove;
   ws = new GitWorkspace({
     repoDir: join(tmp, "repo"),
     worktreesDir: join(tmp, "repo", "worktrees"),
@@ -32,7 +34,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(tmp, { recursive: true, force: true });
+  await cleanup();
 });
 
 const okAgent: DiscoveryAgent = { run: async () => ({ tokens: 7 }) };

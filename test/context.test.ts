@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -187,5 +187,53 @@ describe("cost tracking", () => {
     expect(s.promptTokens).toBe(2000);
     expect(s.calls).toBe(2);
     expect(s.usd).toBeGreaterThan(0);
+  });
+});
+
+describe("memory: hierarchical and glob loading", () => {
+  it("loads nested memory files in ancestor order with source comments", async () => {
+    const root = join(dir, "proj");
+    await mkdir(join(root, "sub"), { recursive: true });
+    await writeFile(join(root, "AGENTS.md"), "top level\n");
+    await writeFile(join(root, "sub", "CONTEXT.md"), "nested\n");
+    const bundle = await loadMemory(join(root, "sub"));
+    expect(bundle.files.map((f) => f.path)).toEqual([
+      join(root, "AGENTS.md"),
+      join(root, "sub", "CONTEXT.md")
+    ]);
+    expect(bundle.text).toContain("<!-- ../AGENTS.md -->");
+    expect(bundle.text).toContain("<!-- CONTEXT.md -->");
+    expect(bundle.text).toContain("nested");
+  });
+
+  it("skips empty memory files", async () => {
+    await writeFile(join(dir, "AGENTS.md"), "   \n\n");
+    expect((await loadMemory(dir)).files).toEqual([]);
+  });
+
+  it("expands instruction globs, dedupes and sorts them", async () => {
+    const docs = join(dir, "docs");
+    await mkdir(docs);
+    await writeFile(join(docs, "b.md"), "bee\n");
+    await writeFile(join(docs, "a.md"), "ay\n");
+    const bundle = await loadMemory(dir, ["docs/*.md"]);
+    expect(bundle.files.map((f) => f.path)).toEqual([join(docs, "a.md"), join(docs, "b.md")]);
+  });
+
+  it("accepts a glob with no wildcard and an absolute glob", async () => {
+    await mkdir(join(dir, "docs"));
+    await writeFile(join(dir, "docs", "one.md"), "1\n");
+    expect((await loadMemory(dir, ["docs/one.md"])).files).toHaveLength(1);
+    expect((await loadMemory(dir, [join(dir, "docs", "*.md")])).files).toHaveLength(1);
+  });
+
+  it("dedupes a glob hit that duplicates a hierarchical memory file", async () => {
+    await writeFile(join(dir, "AGENTS.md"), "a\n");
+    const bundle = await loadMemory(dir, ["AGENTS.md"]);
+    expect(bundle.files).toHaveLength(1);
+  });
+
+  it("ignores unmatched and nonexistent globs", async () => {
+    expect((await loadMemory(dir, ["nope/*.md"])).files).toEqual([]);
   });
 });

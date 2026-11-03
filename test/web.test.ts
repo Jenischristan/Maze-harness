@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { htmlToText, parseDuckDuckGo, webfetchTool, websearchTool } from "../src/tools/web.js";
 import type { PermissionPolicy } from "../src/tools/permissions.js";
 import type { ToolContext } from "../src/types.js";
+import { fetchTool } from "../src/tools/fetch.js";
+import { createServer, type Server } from "node:http";
 
 let dir = "";
 const originalFetch = globalThis.fetch;
@@ -29,6 +31,8 @@ function policy(overrides: Partial<PermissionPolicy> = {}): PermissionPolicy {
   };
 }
 
+const perm = policy;
+
 function ctx(p: PermissionPolicy, signal?: AbortSignal): ToolContext {
   return {
     workspaceDir: dir,
@@ -44,6 +48,55 @@ function ctx(p: PermissionPolicy, signal?: AbortSignal): ToolContext {
 
 function htmlResponse(html: string, status = 200): Response {
   return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+let server: Server | null = null;
+let base = "";
+
+async function startServer(): Promise<void> {
+  server = createServer((req, res) => {
+    const url = req.url ?? "/";
+    if (url.startsWith("/text")) {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("hello body");
+      return;
+    }
+    if (url === "/json") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"a":1}');
+      return;
+    }
+    if (url === "/missing") {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("nope");
+      return;
+    }
+    if (url === "/loop") {
+      res.writeHead(302, { location: "/loop" });
+      res.end();
+      return;
+    }
+    if (url === "/bad-redirect") {
+      res.writeHead(302, { location: "file:///etc/passwd" });
+      res.end();
+      return;
+    }
+    if (url === "/invalid-redirect") {
+      res.writeHead(302, { location: "http://[::1" });
+      res.end();
+      return;
+    }
+    if (url === "/large") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end(Buffer.alloc(4096, 0x61));
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("root");
+  });
+  await new Promise<void>((r) => server!.listen(0, "127.0.0.1", () => r()));
+  const addr = server!.address() as { port: number };
+  base = `http://127.0.0.1:${addr.port}`;
 }
 
 describe("htmlToText", () => {
@@ -265,5 +318,98 @@ describe("webfetch tool", () => {
     const res = await webfetchTool.execute({ url: "https://example.com/x" }, ctx(p));
     expect(res.ok).toBe(false);
     expect(res.error).toBe("permission-denied");
+  });
+});
+
+describe("fetch tool", () => {
+  const fetchCtx = (overrides: Partial<PermissionPolicy> = {}): ToolContext =>
+    ctx(perm({ networkAllowlist: ["127.0.0.1"], ...overrides }));
+
+  it("rejects an invalid url and a non-http protocol", async () => {
+    expect((await fetchTool.execute({ url: "::bad" }, fetchCtx())).error).toBe("bad-url");
+    expect((await fetchTool.execute({ url: "ftp://x/y" }, fetchCtx())).error).toBe("bad-protocol");
+  });
+
+  it("denies hosts outside the allowlist", async () => {
+    const res = await fetchTool.execute({ url: "https://evil.test/" }, fetchCtx());
+    expect(res.error).toBe("network-denied");
+  });
+
+  it("honours a deny decision from the permission policy", async () => {
+    await startServer();
+    const res = await fetchTool.execute(
+      { url: `${base}/text` },
+      fetchCtx({ rules: [{ tool: "fetch", action: "deny" }] })
+    );
+    expect(res.error).toBe("permission-denied");
+  });
+
+  it("returns the body and metadata for a 200", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/text` }, fetchCtx());
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("hello body");
+    expect(res.data).toMatchObject({ status: 200, bytes: 10, truncated: false });
+  });
+
+  it("reports a non-2xx status while still returning the body", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/missing` }, fetchCtx());
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("http 404");
+    expect(res.content).toBe("nope");
+  });
+
+  it("caps the body and flags over-read", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/large`, maxBytes: 100 }, fetchCtx());
+    expect(res.ok).toBe(true);
+    const data = res.data as { bytes: number; bodyCapped: boolean };
+    expect(data.bytes).toBe(100);
+    expect(data.bodyCapped).toBe(true);
+  });
+
+  it("clamps maxBytes into the supported range", async () => {
+    await startServer();
+    const low = await fetchTool.execute({ url: `${base}/text`, maxBytes: -10 }, fetchCtx());
+    expect(low.ok).toBe(true);
+    const huge = await fetchTool.execute({ url: `${base}/text`, maxBytes: 1e12 }, fetchCtx());
+    expect(huge.ok).toBe(true);
+    const nan = await fetchTool.execute({ url: `${base}/text`, maxBytes: "x" }, fetchCtx());
+    expect(nan.ok).toBe(true);
+  });
+
+  it("refuses a redirect to a non-allowlisted host", async () => {
+    await startServer();
+    const res = await fetchTool.execute(
+      { url: `${base}/loop` },
+      fetchCtx({ networkAllowlist: ["localhost"] })
+    );
+    // The target is 127.0.0.1, not localhost, so the first hop is denied.
+    expect(res.error).toBe("network-denied");
+  });
+
+  it("stops after too many redirects", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/loop` }, fetchCtx());
+    expect(res.error).toBe("too-many-redirects");
+  });
+
+  it("rejects a redirect to a non-http scheme", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/bad-redirect` }, fetchCtx());
+    expect(res.error).toBe("bad-redirect");
+  });
+
+  it("rejects an unparsable redirect location", async () => {
+    await startServer();
+    const res = await fetchTool.execute({ url: `${base}/invalid-redirect` }, fetchCtx());
+    expect(res.ok).toBe(false);
+  });
+
+  it("maps a network error to a failed result", async () => {
+    const res = await fetchTool.execute({ url: "http://127.0.0.1:1/x" }, fetchCtx());
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("fetch failed");
   });
 });

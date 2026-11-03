@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAgentLoop, type AgentLoopConfig } from "../src/agent/loop.js";
@@ -7,17 +6,22 @@ import { SessionStore } from "../src/session/store.js";
 import { CostTracker } from "../src/cost.js";
 import { ToolExecutor, ToolRegistry } from "../src/tools/index.js";
 import type { ChatMessage, ChatResult, ToolCall } from "../src/types.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 let dir = "";
-const noHooks = { register: () => undefined, list: () => [], runAll: async () => [] };
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-loop-"));
+  const t = await makeTempDir("dh-agentloop");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
+
+const noHooks = { register: () => undefined, list: () => [], runAll: async () => [] };
 
 function toolCall(id: string, name = "noop"): ToolCall {
   return { id, name, arguments: {} };

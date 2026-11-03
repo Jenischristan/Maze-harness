@@ -3,6 +3,7 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CommandEvaluator } from "../src/evaluator.js";
 
 // System tests: run each bundled evaluator exactly the way the harness does
 // (a separate process, one JSON line on stdout, scrubbed cwd) and assert the
@@ -351,4 +352,92 @@ describe("self-improve evaluator", () => {
     // Whatever the outcome, the contract is exactly one JSON line on stdout.
     expect(res.stdout.trim().split("\n")).toHaveLength(1);
   }, 120_000);
+});
+
+describe("evaluator: command results", () => {
+  function evaluator(script: string, timeoutMs = 10_000): CommandEvaluator {
+    return new CommandEvaluator({
+      command: [process.execPath, "-e", script],
+      timeoutMs,
+      cwd: dir
+    });
+  }
+
+  it("parses a score/valid JSON payload", async () => {
+    const res = await evaluator("console.log(JSON.stringify({score: 0.5, valid: true}))").evaluate(
+      dir
+    );
+    expect(res).toMatchObject({ score: 0.5, valid: true, failClass: "ok" });
+  });
+
+  it("defaults validity from the score and failClass from validity", async () => {
+    const ok = await evaluator("console.log(JSON.stringify({score: 1}))").evaluate(dir);
+    expect(ok.valid).toBe(true);
+    const bad = await evaluator("console.log(JSON.stringify({score: null}))").evaluate(dir);
+    expect(bad.valid).toBe(false);
+    expect(bad.failClass).toBe("incorrect");
+  });
+
+  it("keeps an explicit failClass and error", async () => {
+    const res = await evaluator(
+      'console.log(JSON.stringify({score: null, failClass: "compile", error: "nope"}))'
+    ).evaluate(dir);
+    expect(res).toMatchObject({ failClass: "compile", error: "nope" });
+  });
+
+  it("rejects a non-object payload", async () => {
+    const res = await evaluator('console.log("[1,2]")').evaluate(dir);
+    expect(res.error).toBe("evaluator JSON must be an object");
+  });
+
+  it("rejects a non-JSON last line", async () => {
+    const res = await evaluator('console.log("not json")').evaluate(dir);
+    expect(res.error).toBe("evaluator last line is not JSON");
+  });
+
+  it("reports no JSON line with the exit class", async () => {
+    const res = await evaluator("process.exit(3)").evaluate(dir);
+    expect(res.failClass).toBe("runtime");
+    expect(res.error).toMatch(/no JSON line/);
+  });
+
+  it("times out a slow evaluator", async () => {
+    const res = await evaluator("setTimeout(() => {}, 5000)", 200).evaluate(dir);
+    expect(res.failClass).toBe("timeout");
+  });
+
+  it("reports an abort", async () => {
+    const ac = new AbortController();
+    const p = evaluator("setTimeout(() => {}, 5000)", 10_000).evaluate(dir, ac.signal);
+    setTimeout(() => ac.abort(), 50);
+    expect((await p).error).toBe("evaluator aborted");
+  });
+
+  it("rejects an already-aborted signal", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const res = await evaluator("console.log('{}')").evaluate(dir, ac.signal);
+    expect(res.failClass).toBe("timeout");
+  });
+
+  it("reports an empty command", async () => {
+    const res = await new CommandEvaluator({ command: [], timeoutMs: 1000 }).evaluate(dir);
+    expect(res.error).toBe("evaluator command is empty");
+  });
+
+  it("reports a spawn failure", async () => {
+    const res = await new CommandEvaluator({
+      command: [join(dir, "no-such-binary")],
+      timeoutMs: 1000
+    }).evaluate(dir);
+    expect(res.error).toMatch(/spawn failed/);
+  });
+
+  it("substitutes {workspace} in arguments", async () => {
+    const res = await new CommandEvaluator({
+      command: [process.execPath, "-e", "console.log(JSON.stringify({score:1, valid:true}))"],
+      timeoutMs: 5000
+    }).evaluate("{workspace}");
+    expect(res.score).toBe(1);
+  });
 });

@@ -20,11 +20,13 @@ export default defineConfig({
       exclude: ["src/cli.ts", "src/cli-version.ts", "src/policies/sandboxRunner.ts"],
       
       
+      // Raised to match the current suite (92/96/92/86) with a small cushion
+      // so a real regression fails CI while unrelated churn does not.
       thresholds: {
-        lines: 60,
-        functions: 60,
-        statements: 60,
-        branches: 55
+        lines: 90,
+        functions: 92,
+        statements: 90,
+        branches: 84
       }
     }
   }

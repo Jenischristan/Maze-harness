@@ -1,18 +1,21 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileGoalStore } from "../src/goals.js";
 import { discoverSkills, findSkill, skillPrompt } from "../src/skills.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-goal-skill-"));
+  const t = await makeTempDir("dh-goal-skill");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
 describe("goals: lifecycle and edge cases", () => {

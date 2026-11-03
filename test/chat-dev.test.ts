@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sessionsDir, buildSession } from "../src/chat.js";
@@ -7,17 +6,21 @@ import { CliPolicyDeveloper } from "../src/developer/cli.js";
 import { renderFeedbackMarkdown, buildFeedbackReport } from "../src/developer/report.js";
 import { formatHookFeedback } from "../src/agent/verify.js";
 import type { DiscoveryTree, ReplayReport } from "../src/types.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-chatdev-"));
+  const t = await makeTempDir("dh-chatdev");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
   delete process.env.MAZE_SESSIONS_DIR;
   delete process.env.XDG_DATA_HOME;
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
 function tree(index = 0): DiscoveryTree {

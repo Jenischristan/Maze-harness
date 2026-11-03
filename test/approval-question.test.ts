@@ -1,20 +1,23 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readLine, ttyApproval } from "../src/tools/approval.js";
+import { buildPermissionPolicy, readLine, ttyApproval } from "../src/tools/approval.js";
 import { questionTool, setQuestionHandler, ttyQuestionHandler } from "../src/tools/question.js";
 import { loadVariantSource, seedPolicySource } from "../src/policies/seed.js";
+import { makeTempDir } from "./helpers/fixtures.js";
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-aq-"));
+  const t = await makeTempDir("dh-aq");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
   setQuestionHandler(null);
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
 function forceStdin(opts: { isTTY?: boolean; text?: string }): () => void {
@@ -224,5 +227,34 @@ describe("policies/seed path resolution", () => {
     expect(greedy.policyId).toBe("greedy-2");
     expect(greedy.source).toContain("class");
     expect(greedy.source).not.toBe((await loadVariantSource("fixed")).source);
+  });
+});
+
+describe("tools/approval", () => {
+  it("maps permission modes to the default action", () => {
+    expect(buildPermissionPolicy(undefined).defaultAction).toBe("allow");
+    expect(buildPermissionPolicy("bogus").defaultAction).toBe("allow");
+    expect(buildPermissionPolicy("ask").defaultAction).toBe("ask");
+    expect(buildPermissionPolicy("deny").defaultAction).toBe("deny");
+  });
+
+  it("installs the supplied approver as the ask handler", async () => {
+    let asked = 0;
+    const policy = buildPermissionPolicy("ask", async () => {
+      asked += 1;
+      return true;
+    });
+    await expect(policy.ask!({ tool: "bash", pattern: "ls", args: {} })).resolves.toBe(true);
+    expect(asked).toBe(1);
+  });
+
+  it("denies without a TTY instead of hanging", async () => {
+    const original = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    try {
+      await expect(ttyApproval({ tool: "bash", pattern: "rm", args: {} })).resolves.toBe(false);
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
+    }
   });
 });

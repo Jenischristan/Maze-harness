@@ -105,3 +105,83 @@ describe("persistent shell timeouts", () => {
     expect(b.content.trim()).toBe("C");
   }, 20000);
 });
+
+describe("hooks: abort and spawn failure", () => {
+  it("kills a hook when the signal aborts mid-run", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 20_000, maxOutputBytes: 4096 });
+    hooks.register({ name: "slow", command: "sleep 30" });
+    const ac = new AbortController();
+    const p = hooks.runAll(ac.signal);
+    setTimeout(() => ac.abort(), 100);
+    const results = await p;
+    expect(results[0]!.ok).toBe(false);
+  }, 20_000);
+
+  it("reports a spawn failure as a failed hook with output", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "missing", command: "/definitely/not/a/binary-xyz 2>/dev/null" });
+    const [r] = await hooks.runAll();
+    expect(r!.ok).toBe(false);
+    expect(r!.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("runs hooks with a custom env map", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "env", command: 'test "$HOOK_VAR" = yes', env: { HOOK_VAR: "yes" } });
+    const [r] = await hooks.runAll();
+    expect(r!.ok).toBe(true);
+  });
+});
+
+describe("hooks", () => {
+  it("runs every registered hook and reports pass/fail", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "ok", command: "echo fine" });
+    hooks.register({ name: "bad", command: "echo boom >&2; exit 2" });
+    const results = await hooks.runAll();
+    expect(results.map((r) => [r.name, r.ok])).toEqual([
+      ["ok", true],
+      ["bad", false]
+    ]);
+    expect(results[1]!.output).toContain("boom");
+  });
+
+  it("times out a hook and reports timedOut", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "slow", command: "sleep 30", timeoutMs: 300 });
+    const [r] = await hooks.runAll();
+    expect(r!.ok).toBe(false);
+    expect(r!.timedOut).toBe(true);
+  });
+
+  it("caps hook output at the byte budget", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 16 });
+    hooks.register({ name: "loud", command: "echo 'abcdefghijklmnopqrstuvwxyz'" });
+    const [r] = await hooks.runAll();
+    expect(r!.output).toContain("[truncated]");
+  });
+
+  it("refuses to start when the signal is already aborted", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "x", command: "echo hi" });
+    const ac = new AbortController();
+    ac.abort();
+    const results = await hooks.runAll(ac.signal);
+    expect(results).toEqual([]);
+  });
+
+  it("reports a spawn failure as a failed hook", async () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 5000, maxOutputBytes: 4096 });
+    hooks.register({ name: "x", command: "exit 3" });
+    const [r] = await hooks.runAll();
+    expect(r!.ok).toBe(false);
+  });
+
+  it("lists a copy of registered hooks", () => {
+    const hooks = new Hooks({ workspaceDir: dir, timeoutMs: 1000, maxOutputBytes: 100 });
+    hooks.register({ name: "a", command: "true" });
+    const list = hooks.list();
+    list.push({ name: "b", command: "true" });
+    expect(hooks.list()).toHaveLength(1);
+  });
+});

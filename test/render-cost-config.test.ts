@@ -1,5 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { printEvent, printStreamEvent, finishStreamLine } from "../src/chat-render.js";
@@ -13,32 +12,24 @@ import {
   loadFileConfig
 } from "../src/config.js";
 import { lspTool } from "../src/tools/lsp.js";
-import type { ToolContext } from "../src/types.js";
+import { makeTempDir, toolContext } from "./helpers/fixtures.js";
 
 let dir = "";
+let cleanup = async (): Promise<void> => undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "dh-rc-"));
+  const t = await makeTempDir("dh-rc");
+  dir = t.dir;
+  cleanup = t.remove;
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
   delete process.env.MAZE_SHOW_REASONING;
-  await rm(dir, { recursive: true, force: true });
+  await cleanup();
 });
 
-function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
-  return {
-    workspaceDir: dir,
-    readFiles: new Set(),
-    readHashes: new Map(),
-    modifiedFiles: new Set(),
-    maxOutputBytes: 32 * 1024,
-    permission: { defaultAction: "allow", rules: [] },
-    hooks: { register: () => undefined, list: () => [], runAll: async () => [] },
-    ...overrides
-  };
-}
+const ctx = (overrides: Record<string, unknown> = {}) => toolContext(dir, overrides as never);
 
 function capture(): { out: string[]; err: string[]; restore: () => void } {
   const out: string[] = [];
