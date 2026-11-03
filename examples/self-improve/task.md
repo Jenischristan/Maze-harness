@@ -1,6 +1,6 @@
-# Task: improve the dream-harness
+# Task: improve the maze-harness
 
-You are working inside a copy of the dream-harness repository itself. Improve the
+You are working inside a copy of the maze-harness repository itself. Improve the
 harness. The evaluator installs dependencies, runs `pnpm typecheck`, then runs the
 full test suite, and scores `passed / total`. A failing typecheck halves the score.
 

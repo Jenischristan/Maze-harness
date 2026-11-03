@@ -4,7 +4,7 @@ Generated from the commander definitions in `src/cli.ts`. Run
 `node dist/cli.js <command> --help` for the authoritative, always-current text.
 
 ```
-Usage: dream-harness [options] [command]
+Usage: maze-harness [options] [command]
 
 Commands:
   dream [options]            run the Dream-RSI loop

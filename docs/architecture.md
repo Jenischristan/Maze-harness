@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how `dream-harness` is put together: the layers, the
+This document explains how `maze-harness` is put together: the layers, the
 data that flows between them, and the invariants each layer is responsible
 for. Read it before changing anything under `src/loop`, `src/env` or
 `src/policies`.

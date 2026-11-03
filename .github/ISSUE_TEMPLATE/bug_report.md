@@ -21,7 +21,7 @@ assignees: ""
 ```
 
 - Node version (`node --version`):
-- `dream-harness` version / commit:
+- `maze-harness` version / commit:
 - Command and flags:
 - Agent / developer mode (`scripted`, `cli`, `tool`, ...):
 - `DREAM_LOG_LEVEL=debug` output, if relevant (redact secrets):

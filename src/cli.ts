@@ -19,7 +19,7 @@ import type { ReplayScoreConfig, TaskSpec } from "./types.js";
 
 const program = new Command();
 program
-  .name("dream-harness")
+  .name("maze-harness")
   .description("Dream-RSI-style recursive exploration-policy improvement harness")
   .version(await versionFromCli());
 
@@ -584,7 +584,7 @@ program
     const positional = Array.isArray(words) ? words.join(" ") : "";
     const message = String(o.message ?? positional);
     if (!message.trim()) {
-      process.stderr.write("usage: dream-harness chat <message>\n");
+      process.stderr.write("usage: maze-harness chat <message>\n");
       process.exit(1);
     }
     const budget: {

@@ -1,10 +1,10 @@
 {
-  "name": "dream-harness",
+  "name": "maze-harness",
   "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Dream-RSI-style recursive exploration-policy improvement harness with a coding-agent CLI, tool calling, compaction, permissions, and sessions.",
-  "bin": { "dream-harness": "./dist/cli.js" },
+  "bin": { "maze-harness": "./dist/cli.js" },
   "scripts": {
     "dev": "tsx src/cli.ts",
     "start": "tsx src/cli.ts chat",

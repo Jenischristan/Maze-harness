@@ -1,5 +1,5 @@
 {
-  "name": "dream-harness",
+  "name": "maze-harness",
   "version": "1.0.0",
   "description": "Dream-RSI-style recursive self-improvement harness: a coding agent, an exploration-policy loop, and a replay sandbox.",
   "license": "Apache-2.0",
@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@9.12.0",
   "bin": {
-    "dream-harness": "./dist/cli.js"
+    "maze-harness": "./dist/cli.js"
   },
   "files": [
     "dist/",

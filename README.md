@@ -1,4 +1,4 @@
-# dream-harness
+# maze-harness
 
 A TypeScript coding-agent harness built around a **small set of sharp tools**
 (read, grep, glob, edit, apply_patch, write, bash), with exact-match edits,
@@ -187,14 +187,14 @@ evaluator runs with a scrubbed child environment.
 ## CLI
 
 ```
-dream-harness dream|fixed [options]   run the loop
-dream-harness chat  <message>         native tool-agent chat
-dream-harness report [--json]         compare runs
-dream-harness sessions [--json]       list persisted sessions
-dream-harness session <id> [--json]   inspect a session
-dream-harness compact <id>            summarize a session
-dream-harness checkpoint --label L    git checkpoint
-dream-harness worktree <name>         isolated git worktree
+maze-harness dream|fixed [options]   run the loop
+maze-harness chat  <message>         native tool-agent chat
+maze-harness report [--json]         compare runs
+maze-harness sessions [--json]       list persisted sessions
+maze-harness session <id> [--json]   inspect a session
+maze-harness compact <id>            summarize a session
+maze-harness checkpoint --label L    git checkpoint
+maze-harness worktree <name>         isolated git worktree
 ```
 
 Key options: `--rounds`, `--revisions`, `--workers`, `--round-limit`,

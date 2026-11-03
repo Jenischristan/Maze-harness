@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve `dream-harness`. This document covers the
+Thanks for helping improve `maze-harness`. This document covers the
 expectations for changes; `docs/architecture.md` explains how the pieces fit
 together and `docs/cli.md` is the command reference.
 

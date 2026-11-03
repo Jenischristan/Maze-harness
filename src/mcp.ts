@@ -112,7 +112,7 @@ export class McpClient {
         {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          clientInfo: { name: "dream-harness", version: "0.2.0" }
+          clientInfo: { name: "maze-harness", version: "0.2.0" }
         },
         timeoutMs
       )) as { protocolVersion?: string } | null;

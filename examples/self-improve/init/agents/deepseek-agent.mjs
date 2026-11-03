@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dream-harness discovery agent backed by deepseek-router (OpenAI-compatible).
+// maze-harness discovery agent backed by deepseek-router (OpenAI-compatible).
 // Prompt on stdin. The model calls file/bash tools until it stops calling tools.
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";

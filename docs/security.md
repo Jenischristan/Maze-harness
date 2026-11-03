@@ -1,6 +1,6 @@
 # Trust model and security notes
 
-`dream-harness` executes model output and third-party policy code. This page
+`maze-harness` executes model output and third-party policy code. This page
 states exactly what is and is not protected, so you can decide when a
 container is required.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluator for the "improve this harness" task — offline, no installs.
 
-Scores a candidate copy of the dream-harness repository by running the checks
+Scores a candidate copy of the maze-harness repository by running the checks
 that are already installed, in two stages:
 
   1. `pnpm typecheck` + the fast suites (everything except the long fuzzers)

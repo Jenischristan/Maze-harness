@@ -1,6 +1,6 @@
 # Operations
 
-How to run, observe, resume and clean up `dream-harness`.
+How to run, observe, resume and clean up `maze-harness`.
 
 ## Requirements
 

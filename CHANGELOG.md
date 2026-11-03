@@ -56,6 +56,6 @@ This release hardens the harness around it.
 
 ### Changed
 
-- `package.json` renamed to `dream-harness`, version `1.0.0`, with `files`,
+- `package.json` renamed to `maze-harness`, version `1.0.0`, with `files`,
   `packageManager`, lint/format/coverage/docs scripts.
 - Live manifest records carry `schema` instead of `version`.

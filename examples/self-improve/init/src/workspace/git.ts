@@ -15,9 +15,9 @@ export async function git(args: string[], cwd: string): Promise<GitResult> {
       cwd,
       env: {
         ...process.env,
-        GIT_AUTHOR_NAME: "dream-harness",
+        GIT_AUTHOR_NAME: "maze-harness",
         GIT_AUTHOR_EMAIL: "harness@localhost",
-        GIT_COMMITTER_NAME: "dream-harness",
+        GIT_COMMITTER_NAME: "maze-harness",
         GIT_COMMITTER_EMAIL: "harness@localhost"
       },
       stdio: ["ignore", "pipe", "pipe"]
@@ -62,7 +62,7 @@ export class GitWorkspace {
     const infoDir = join(this.repoDir, ".git", "info");
     await mkdir(infoDir, { recursive: true });
     await appendFile(join(infoDir, "exclude"), "\nworktrees/\n").catch(() => undefined);
-    await gitOrThrow(["config", "user.name", "dream-harness"], this.repoDir);
+    await gitOrThrow(["config", "user.name", "maze-harness"], this.repoDir);
     await gitOrThrow(["config", "user.email", "harness@localhost"], this.repoDir);
     await this.initRootIfNeeded();
   }
